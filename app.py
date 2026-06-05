@@ -1,7 +1,7 @@
 # =============================================================================
 # app.py
 # Explainable AI Workbench — Main Application Entry Point
-# Day 2: Data Ingestion & Understanding Module
+# Day 3: Model Arena Module
 # =============================================================================
 
 import streamlit as st
@@ -16,6 +16,12 @@ from src.data_handler import (
     detect_problem_type,
     get_dataset_summary,
     clean_data
+)
+from src.model_arena import (
+    train_all_models,
+    get_comparison_dataframe,
+    get_interpretability_warning,
+    get_best_model
 )
 
 # =============================================================================
@@ -145,6 +151,20 @@ if "is_demo" not in st.session_state:
 if "uploader_key" not in st.session_state:
     st.session_state.uploader_key = 0       # Incrementing this clears the file uploader
 
+# Model Arena state
+if "arena_results" not in st.session_state:
+    st.session_state.arena_results = None       # List of model evaluation results
+if "trained_models" not in st.session_state:
+    st.session_state.trained_models = None      # Dict of trained model objects
+if "data_splits" not in st.session_state:
+    st.session_state.data_splits = None         # Train/test splits
+if "selected_model_name" not in st.session_state:
+    st.session_state.selected_model_name = None # User's chosen model
+if "arena_complete" not in st.session_state:
+    st.session_state.arena_complete = False     # Flag: model selected and ready
+if "show_arena" not in st.session_state:
+    st.session_state.show_arena = False         # Flag: user clicked proceed
+
 # =============================================================================
 # SIDEBAR
 # =============================================================================
@@ -157,7 +177,7 @@ with st.sidebar:
     st.markdown("### 📍 Progress")
     steps = {
         "✅ Data Upload": st.session_state.data_loaded,
-        "⬜ Model Arena": False,
+        "⚙️ Model Arena": st.session_state.arena_complete,
         "⬜ Feature Importance": False,
         "⬜ Symbolic Regression": False,
         "⬜ Desmos Visualization": False,
@@ -220,7 +240,16 @@ with upload_tab:
         if error:
             st.error(f"❌ {error}")
         else:
-            # User uploaded their own file — clear demo flag completely
+            # Only reset arena if this is a genuinely new file
+            is_new_file = (st.session_state.dataset_name != uploaded_file.name)
+            if is_new_file:
+                st.session_state.arena_results = None
+                st.session_state.trained_models = None
+                st.session_state.data_splits = None
+                st.session_state.selected_model_name = None
+                st.session_state.arena_complete = False
+                st.session_state.show_arena = False
+
             st.session_state.df_raw = df
             st.session_state.dataset_name = uploaded_file.name
             st.session_state.data_loaded = True
@@ -251,6 +280,13 @@ with demo_tab:
             st.session_state.data_loaded = True
             st.session_state.is_demo = True
             st.session_state.uploader_key += 1
+            # Reset arena for new dataset
+            st.session_state.arena_results = None
+            st.session_state.trained_models = None
+            st.session_state.data_splits = None
+            st.session_state.selected_model_name = None
+            st.session_state.arena_complete = False
+            st.session_state.show_arena = False
             st.rerun()  # ← force full rerun so all state updates reflect immediately
 
     with col2:
@@ -261,6 +297,13 @@ with demo_tab:
             st.session_state.data_loaded = True
             st.session_state.is_demo = True
             st.session_state.uploader_key += 1
+            # Reset arena for new dataset
+            st.session_state.arena_results = None
+            st.session_state.trained_models = None
+            st.session_state.data_splits = None
+            st.session_state.selected_model_name = None
+            st.session_state.arena_complete = False
+            st.session_state.show_arena = False
             st.rerun()  # ← force full rerun so all state updates reflect immediately
 
     # Show active demo status inside demo tab as well
@@ -294,6 +337,15 @@ if st.session_state.data_loaded and st.session_state.df_raw is not None:
         )
 
     if target_column:
+        # Reset arena if target column changed — prevents stale cached results
+        if st.session_state.target_column != target_column:
+            st.session_state.arena_results = None
+            st.session_state.trained_models = None
+            st.session_state.data_splits = None
+            st.session_state.selected_model_name = None
+            st.session_state.arena_complete = False
+            st.session_state.show_arena = False
+
         st.session_state.target_column = target_column
 
         # Auto-detect problem type
@@ -476,7 +528,8 @@ if st.session_state.data_loaded and st.session_state.df_raw is not None:
                 fig.update_layout(
                     plot_bgcolor="#0e1117",
                     paper_bgcolor="#0e1117",
-                    font_color="#e0e0e0"
+                    font_color="#e0e0e0",
+                    bargap=0.05
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
@@ -489,9 +542,9 @@ if st.session_state.data_loaded and st.session_state.df_raw is not None:
                 sc4.metric("Q3", f"{dist['q3']:.2f}")
                 sc5.metric("Max", f"{dist['max']:.2f}")
 
-    # =============================================================================
+    # ==========================================================================
     # PHASE 1 — PROCEED BUTTON
-    # =============================================================================
+    # ==========================================================================
 
         st.markdown("---")
         col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
@@ -501,8 +554,215 @@ if st.session_state.data_loaded and st.session_state.df_raw is not None:
                 use_container_width=True,
                 type="primary"
             ):
-                st.success("✅ Data locked in! Model Arena is coming in Day 3.")
-                st.balloons()
+                # Explicitly save everything needed before rerun
+                df_clean_now, _ = clean_data(df, target_column)
+                st.session_state.df_clean = df_clean_now
+                st.session_state.target_column = target_column
+                pt, _, _ = detect_problem_type(df, target_column)
+                st.session_state.problem_type = pt
+                st.session_state.show_arena = True
+                st.rerun()
+
+# =============================================================================
+# PHASE 2 — MODEL ARENA
+# Only shown after user clicks Proceed to Model Arena
+# =============================================================================
+
+if (
+    st.session_state.data_loaded
+    and st.session_state.df_clean is not None
+    and st.session_state.target_column is not None
+    and st.session_state.problem_type is not None
+    and st.session_state.show_arena
+):
+    st.markdown("---")
+    st.markdown("""
+    <div class='section-header'>
+        <h2 style='margin:0; color:#e0e0e0;'>⚔️ Phase 2 — Model Arena</h2>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown(
+        "<p style='color:#8892b0;'>Training all models simultaneously and evaluating their performance. "
+        "You will then choose which model to use for explainability analysis.</p>",
+        unsafe_allow_html=True
+    )
+
+    # ── Train models (only if not already trained) ──────────────────────────
+    if st.session_state.arena_results is None:
+        with st.spinner("⚔️ Training all models in the arena... Please wait."):
+            results, trained_models, data_splits = train_all_models(
+                st.session_state.df_clean,
+                st.session_state.target_column,
+                st.session_state.problem_type
+            )
+            st.session_state.arena_results = results
+            st.session_state.trained_models = trained_models
+            st.session_state.data_splits = data_splits
+        st.success("✅ All models trained successfully!")
+
+    results      = st.session_state.arena_results
+    problem_type = st.session_state.problem_type
+
+    # ── Best model recommendation ────────────────────────────────────────────
+    best_model_name = get_best_model(results, problem_type)
+    st.markdown(f"""
+    <div class='custom-info'>
+        🏆 Best performing model based on primary metric:
+        <strong>{best_model_name}</strong> —
+        but the final choice is yours. Consider interpretability vs performance.
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Comparison Table ─────────────────────────────────────────────────────
+    st.markdown("### 📋 Model Comparison Table")
+    df_comparison = get_comparison_dataframe(results, problem_type)
+    st.dataframe(df_comparison, use_container_width=True, hide_index=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Visual Comparison Charts ──────────────────────────────────────────────
+    st.markdown("### 📊 Visual Comparison")
+
+    model_names = [r["model_name"] for r in results]
+    colors      = ["#4fc3f7", "#81c784", "#ffb74d"]
+
+    if problem_type == "regression":
+        chart_tab1, chart_tab2, chart_tab3 = st.tabs(["R²", "MAE", "RMSE"])
+
+        with chart_tab1:
+            fig = go.Figure(go.Bar(
+                x=model_names,
+                y=[r["R²"] for r in results],
+                marker_color=colors,
+                text=[f"{r['R²']:.4f}" for r in results],
+                textposition="outside"
+            ))
+            fig.update_layout(
+                title="R² Score (higher is better ↑)",
+                yaxis_title="R²",
+                template="plotly_dark",
+                plot_bgcolor="#0e1117",
+                paper_bgcolor="#0e1117",
+                font_color="#e0e0e0",
+                yaxis=dict(range=[0, 1.1])
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        with chart_tab2:
+            fig = go.Figure(go.Bar(
+                x=model_names,
+                y=[r["MAE"] for r in results],
+                marker_color=colors,
+                text=[f"{r['MAE']:.4f}" for r in results],
+                textposition="outside"
+            ))
+            fig.update_layout(
+                title="Mean Absolute Error (lower is better ↓)",
+                yaxis_title="MAE",
+                template="plotly_dark",
+                plot_bgcolor="#0e1117",
+                paper_bgcolor="#0e1117",
+                font_color="#e0e0e0"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        with chart_tab3:
+            fig = go.Figure(go.Bar(
+                x=model_names,
+                y=[r["RMSE"] for r in results],
+                marker_color=colors,
+                text=[f"{r['RMSE']:.4f}" for r in results],
+                textposition="outside"
+            ))
+            fig.update_layout(
+                title="Root Mean Squared Error (lower is better ↓)",
+                yaxis_title="RMSE",
+                template="plotly_dark",
+                plot_bgcolor="#0e1117",
+                paper_bgcolor="#0e1117",
+                font_color="#e0e0e0"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+    else:
+        chart_tab1, chart_tab2, chart_tab3, chart_tab4 = st.tabs(
+            ["Accuracy", "Precision", "Recall", "F1 Score"]
+        )
+
+        metrics_map = {
+            "Accuracy":  ("Accuracy (higher is better ↑)",   "Accuracy"),
+            "Precision": ("Precision (higher is better ↑)",  "Precision"),
+            "Recall":    ("Recall (higher is better ↑)",     "Recall"),
+            "F1 Score":  ("F1 Score (higher is better ↑)",   "F1 Score"),
+        }
+        for tab, (metric_key, (title, ylabel)) in zip(
+            [chart_tab1, chart_tab2, chart_tab3, chart_tab4],
+            metrics_map.items()
+        ):
+            with tab:
+                fig = go.Figure(go.Bar(
+                    x=model_names,
+                    y=[r[metric_key] for r in results],
+                    marker_color=colors,
+                    text=[f"{r[metric_key]:.4f}" for r in results],
+                    textposition="outside"
+                ))
+                fig.update_layout(
+                    title=title,
+                    yaxis_title=ylabel,
+                    template="plotly_dark",
+                    plot_bgcolor="#0e1117",
+                    paper_bgcolor="#0e1117",
+                    font_color="#e0e0e0",
+                    yaxis=dict(range=[0, 1.1])
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+    # ── Model Selection ───────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 🎯 Select Your Model")
+    st.markdown(
+        "<p style='color:#8892b0;'>Choose the model whose predictions you want to explain. "
+        "Higher accuracy isn't always the right choice — consider the interpretability tradeoff.</p>",
+        unsafe_allow_html=True
+    )
+
+    selected_model = st.radio(
+        "Which model do you want to proceed with?",
+        options=model_names,
+        index=model_names.index(best_model_name),  # default = best model
+        horizontal=True
+    )
+
+    # Show interpretability warning instantly on selection
+    if selected_model:
+        warning_msg, warning_level = get_interpretability_warning(
+            selected_model, problem_type
+        )
+        if warning_level == "info":
+            st.info(warning_msg)
+        else:
+            st.warning(warning_msg)
+
+    # ── Confirm Selection Button ──────────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    col_b1, col_b2, col_b3 = st.columns([1, 2, 1])
+    with col_b2:
+        if st.button(
+            f"✅ Confirm — Use {selected_model} →",
+            use_container_width=True,
+            type="primary"
+        ):
+            st.session_state.selected_model_name = selected_model
+            st.session_state.arena_complete = True
+            st.success(
+                f"✅ **{selected_model}** selected! "
+                f"Feature Importance analysis is coming in Day 4."
+            )
+            st.balloons()
 
 # =============================================================================
 # EMPTY STATE — No data loaded yet
