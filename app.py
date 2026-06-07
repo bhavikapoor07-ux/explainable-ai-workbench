@@ -15,13 +15,20 @@ from src.data_handler import (
     validate_data,
     detect_problem_type,
     get_dataset_summary,
-    clean_data
+    clean_data,
+    get_encoding_maps
 )
 from src.model_arena import (
     train_all_models,
     get_comparison_dataframe,
     get_interpretability_warning,
     get_best_model
+)
+from src.feature_importance import (
+    compute_permutation_importance,
+    select_top_features,
+    get_slider_anchors,
+    prepare_anchored_values
 )
 
 # =============================================================================
@@ -165,6 +172,26 @@ if "arena_complete" not in st.session_state:
 if "show_arena" not in st.session_state:
     st.session_state.show_arena = False         # Flag: user clicked proceed
 
+# Feature Importance state
+if "importance_df" not in st.session_state:
+    st.session_state.importance_df = None       # Full importance DataFrame
+if "top_features" not in st.session_state:
+    st.session_state.top_features = None        # Adaptively selected features
+if "axis_feature_1" not in st.session_state:
+    st.session_state.axis_feature_1 = None      # User's X axis choice
+if "axis_feature_2" not in st.session_state:
+    st.session_state.axis_feature_2 = None      # User's Y axis choice
+if "anchored_values" not in st.session_state:
+    st.session_state.anchored_values = {}       # Median values for remaining features
+if "importance_threshold" not in st.session_state:
+    st.session_state.importance_threshold = 85  # Cumulative importance threshold
+if "importance_complete" not in st.session_state:
+    st.session_state.importance_complete = False
+if "show_importance" not in st.session_state:
+    st.session_state.show_importance = False
+if "encoding_maps" not in st.session_state:
+    st.session_state.encoding_maps = {}        # {col: {0:'CNG', 1:'Diesel'}}
+
 # =============================================================================
 # SIDEBAR
 # =============================================================================
@@ -174,20 +201,31 @@ with st.sidebar:
     st.markdown("---")
 
     # Progress tracker
-    st.markdown("### 📍 Progress")
+    st.markdown("### 📍 Progress Tracker")
+    st.markdown(
+        "<p style='color:#8892b0; font-size:0.78rem; margin-top:-10px;'>"
+        "Scroll down to see each section.</p>",
+        unsafe_allow_html=True
+    )
     steps = {
-        "✅ Data Upload": st.session_state.data_loaded,
-        "⚙️ Model Arena": st.session_state.arena_complete,
-        "⬜ Feature Importance": False,
-        "⬜ Symbolic Regression": False,
-        "⬜ Desmos Visualization": False,
-        "⬜ AI Explanation": False,
+        "Data Upload": st.session_state.data_loaded,
+        "Model Arena": st.session_state.arena_complete,
+        "Feature Importance": st.session_state.importance_complete,
+        "Symbolic Regression": False,
+        "Desmos Visualization": False,
+        "AI Explanation": False,
+    }
+    icons = {
+        True: "✅",
+        False: "⬜"
     }
     for step, done in steps.items():
-        if done:
-            st.markdown(f"<span style='color:#4fc3f7'>{step}</span>", unsafe_allow_html=True)
-        else:
-            st.markdown(f"<span style='color:#8892b0'>{step}</span>", unsafe_allow_html=True)
+        icon = "✅" if done else "⬜"
+        color = "#4fc3f7" if done else "#8892b0"
+        st.markdown(
+            f"<p style='color:{color}; margin:4px 0;'>{icon} {step}</p>",
+            unsafe_allow_html=True
+        )
 
     st.markdown("---")
     st.markdown("### ℹ️ About")
@@ -561,6 +599,8 @@ if st.session_state.data_loaded and st.session_state.df_raw is not None:
                 pt, _, _ = detect_problem_type(df, target_column)
                 st.session_state.problem_type = pt
                 st.session_state.show_arena = True
+                # Store encoding maps from raw data
+                st.session_state.encoding_maps = get_encoding_maps(df, target_column)
                 st.rerun()
 
 # =============================================================================
@@ -758,11 +798,286 @@ if (
         ):
             st.session_state.selected_model_name = selected_model
             st.session_state.arena_complete = True
-            st.success(
-                f"✅ **{selected_model}** selected! "
-                f"Feature Importance analysis is coming in Day 4."
+            # Reset importance if model changed
+            st.session_state.importance_df = None
+            st.session_state.top_features = None
+            st.session_state.importance_complete = False
+            st.session_state.show_importance = True
+            st.rerun()
+
+# =============================================================================
+# PHASE 3 — FEATURE IMPORTANCE ENGINE
+# =============================================================================
+
+if (
+    st.session_state.arena_complete
+    and st.session_state.selected_model_name is not None
+    and st.session_state.df_clean is not None
+    and st.session_state.get("show_importance", False)
+):
+    st.markdown("---")
+    st.markdown("""
+    <div class='section-header'>
+        <h2 style='margin:0; color:#e0e0e0;'>🔍 Phase 3 — Feature Importance Engine</h2>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown(
+        f"<p style='color:#8892b0;'>Computing permutation importance for "
+        f"<strong style='color:#4fc3f7;'>{st.session_state.selected_model_name}</strong> — "
+        f"measuring how much each feature contributes to predictions.</p>",
+        unsafe_allow_html=True
+    )
+
+    # ── Compute importance (only if not already computed) ────────────────────
+    if st.session_state.importance_df is None:
+        with st.spinner("🔍 Computing permutation feature importance..."):
+            model      = st.session_state.trained_models[st.session_state.selected_model_name]
+            X_test     = st.session_state.data_splits["X_test"]
+            y_test     = st.session_state.data_splits["y_test"]
+            feat_names = st.session_state.data_splits["feature_names"]
+
+            importance_df = compute_permutation_importance(
+                model, X_test, y_test,
+                feat_names,
+                st.session_state.problem_type
             )
-            st.balloons()
+            st.session_state.importance_df = importance_df
+        st.success("✅ Feature importance computed successfully!")
+
+    importance_df = st.session_state.importance_df
+
+    # ── Coverage Threshold Selector ───────────────────────────────────────────
+    st.markdown("### ⚙️ Coverage Threshold")
+    st.markdown(
+        "<p style='color:#8892b0; font-size:0.9rem;'>Select how much of the model's "
+        "behaviour you want to explain. Higher = more features included.</p>",
+        unsafe_allow_html=True
+    )
+
+    # Use st.slider with step instead of select_slider to avoid jumping bug
+    threshold = st.slider(
+        "Cumulative Importance Coverage",
+        min_value=70,
+        max_value=100,
+        value=st.session_state.importance_threshold,
+        step=5,
+        format="%d%%",
+        key="threshold_slider"
+    )
+    st.session_state.importance_threshold = threshold
+
+    # Recompute top features based on threshold
+    top_features, n_selected = select_top_features(importance_df, threshold)
+    st.session_state.top_features = top_features
+
+    st.markdown(f"""
+    <div class='custom-info'>
+        ℹ️ <strong>{n_selected} feature(s)</strong> selected to explain
+        <strong>{threshold}%</strong> of model behaviour:
+        {', '.join([f'<strong>{f}</strong>' for f in top_features])}
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Feature Importance Table ──────────────────────────────────────────────
+    st.markdown("### 📋 Feature Importance Breakdown")
+
+    display_df = importance_df[["rank", "feature", "importance_pct", "cumulative_pct", "std"]].copy()
+    display_df.columns = ["Rank", "Feature", "Importance %", "Cumulative %", "Std Dev"]
+    display_df["In Top Features"] = display_df["Feature"].apply(
+        lambda x: "✅ Selected" if x in top_features else "—"
+    )
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Feature Importance Bar Chart ─────────────────────────────────────────
+    st.markdown("### 📊 Feature Importance Chart")
+
+    bar_colors = [
+        "#4fc3f7" if f in top_features else "#455a64"
+        for f in importance_df["feature"]
+    ]
+
+    fig_imp = go.Figure(go.Bar(
+        x=importance_df["importance_pct"],
+        y=importance_df["feature"],
+        orientation="h",
+        marker_color=bar_colors,
+        text=[f"{v:.1f}%" for v in importance_df["importance_pct"]],
+        textposition="outside",
+        error_x=dict(
+            type="data",
+            array=importance_df["std"],
+            visible=True,
+            color="#8892b0"
+        )
+    ))
+    fig_imp.update_layout(
+        title=f"Permutation Feature Importance — {st.session_state.selected_model_name}",
+        xaxis_title="Importance (%)",
+        yaxis_title="Feature",
+        template="plotly_dark",
+        plot_bgcolor="#0e1117",
+        paper_bgcolor="#0e1117",
+        font_color="#e0e0e0",
+        yaxis=dict(autorange="reversed"),
+        height=max(300, len(importance_df) * 55)
+    )
+    st.plotly_chart(fig_imp, use_container_width=True)
+
+    st.markdown(
+        "<p style='color:#8892b0; font-size:0.85rem;'>"
+        "🔵 Blue bars = selected for explanation &nbsp;|&nbsp; "
+        "Grey bars = below threshold &nbsp;|&nbsp; "
+        "Error bars = stability across permutation repeats</p>",
+        unsafe_allow_html=True
+    )
+
+    # ── Axis Feature Selection ────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 🎯 Select Visualization Axes")
+    st.markdown(
+        "<p style='color:#8892b0;'>Choose <strong>2 features</strong> from the top selected features "
+        "to use as the X and Y axes in the Desmos visualization. "
+        "Remaining features will be anchored at their median values with interactive sliders.</p>",
+        unsafe_allow_html=True
+    )
+
+    if len(top_features) < 2:
+        st.error("❌ Not enough features selected. Lower the coverage threshold to include more features.")
+    else:
+        col_ax1, col_ax2 = st.columns(2)
+
+        with col_ax1:
+            axis_1 = st.selectbox(
+                "📐 X-Axis Feature",
+                options=top_features,
+                index=0,
+                key="axis1_select"
+            )
+
+        with col_ax2:
+            axis_2_options = [f for f in top_features if f != axis_1]
+            axis_2 = st.selectbox(
+                "📐 Y-Axis Feature",
+                options=axis_2_options,
+                index=0,
+                key="axis2_select"
+            )
+
+        st.session_state.axis_feature_1 = axis_1
+        st.session_state.axis_feature_2 = axis_2
+
+        # ── Remaining Features Sliders ────────────────────────────────────────
+        remaining_features = [
+            f for f in st.session_state.data_splits["feature_names"]
+            if f != axis_1 and f != axis_2
+        ]
+
+        # Get encoding maps stored during data loading
+        encoding_maps = st.session_state.encoding_maps
+        df_clean = st.session_state.df_clean
+
+        if remaining_features:
+            st.markdown("---")
+            st.markdown("### 🎛️ Anchor Remaining Features")
+            st.markdown(
+                "<p style='color:#8892b0;'>These features are held at fixed values while "
+                "the graph visualizes the relationship between your two selected axes. "
+                "Adjust them to explore different conditions.</p>",
+                unsafe_allow_html=True
+            )
+
+            anchored_values = {}
+            cols_per_row = 3
+            for i in range(0, len(remaining_features), cols_per_row):
+                row_features = remaining_features[i:i + cols_per_row]
+                cols = st.columns(len(row_features))
+
+                for col, feature in zip(cols, row_features):
+                    with col:
+                        if feature in encoding_maps:
+                            # ── Encoded categorical feature ──────────────────
+                            enc_map = encoding_maps[feature]
+                            # options as integers: [0, 1, 2]
+                            options = sorted(enc_map.keys())
+                            # median index as default
+                            default_idx = len(options) // 2
+
+                            selected_val = st.select_slider(
+                                label=f"**{feature}**",
+                                options=options,
+                                value=options[default_idx],
+                                format_func=lambda v, m=enc_map: f"{v}  ({m[v]})",
+                                key=f"slider_{feature}"
+                            )
+
+                        else:
+                            # ── Continuous numeric feature ───────────────────
+                            anchors, anchor_labels, anchor_values = get_slider_anchors(
+                                df_clean,
+                                feature,
+                                st.session_state.target_column
+                            )
+                            default_idx = (
+                                anchor_labels.index("Median")
+                                if "Median" in anchor_labels
+                                else len(anchor_labels) // 2
+                            )
+                            selected_val = st.select_slider(
+                                label=f"**{feature}**",
+                                options=anchor_values,
+                                value=anchor_values[default_idx],
+                                format_func=lambda v, labels=anchor_labels, values=anchor_values: (
+                                    f"{labels[values.index(v)]}  ({v})"
+                                ),
+                                key=f"slider_{feature}"
+                            )
+
+                        anchored_values[feature] = selected_val
+
+            st.session_state.anchored_values = anchored_values
+
+            # Show current anchored values summary
+            with st.expander("📌 Current Anchor Values Summary", expanded=False):
+                anchor_rows = []
+                for k, v in anchored_values.items():
+                    if k in encoding_maps:
+                        display_val = f"{v}  ({encoding_maps[k][v]})"
+                    else:
+                        display_val = str(v)
+                    anchor_rows.append({"Feature": k, "Anchored At": display_val})
+                st.dataframe(
+                    pd.DataFrame(anchor_rows),
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+        # ── Proceed Button ────────────────────────────────────────────────────
+        st.markdown("---")
+        col_f1, col_f2, col_f3 = st.columns([1, 2, 1])
+        with col_f2:
+            if st.button(
+                "🧠 Proceed to Symbolic Regression →",
+                use_container_width=True,
+                type="primary"
+            ):
+                st.session_state.importance_complete = True
+                st.session_state.show_symbolic = True
+                st.success(
+                    f"✅ Features locked in! "
+                    f"X-Axis: **{axis_1}** | Y-Axis: **{axis_2}** | "
+                    f"Symbolic Regression is coming in Day 5."
+                )
+                st.balloons()
+
+        # Mark importance as complete as soon as axes are selected
+        # (not just when proceed is clicked)
+        if axis_1 and axis_2:
+            st.session_state.importance_complete = True
 
 # =============================================================================
 # EMPTY STATE — No data loaded yet

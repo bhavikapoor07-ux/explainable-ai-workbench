@@ -394,3 +394,32 @@ def clean_data(df, target_column):
         cleaning_log.append("No cleaning required. Dataset is already clean.")
 
     return df_clean, cleaning_log
+
+
+# =============================================================================
+# FUNCTION 7 — Get Encoding Maps
+# Returns {col: {0: 'CNG', 1: 'Diesel'}} for display in sliders
+# =============================================================================
+
+def get_encoding_maps(df_raw, target_column):
+    """
+    Returns encoding maps for all categorical columns with <= 10 unique values.
+    Maps are {encoded_int: original_label} for display in sliders.
+
+    Parameters:
+        df_raw        : pd.DataFrame — ORIGINAL raw dataframe before cleaning
+        target_column : str
+
+    Returns:
+        encoding_maps : dict — {column_name: {0: 'CNG', 1: 'Diesel', ...}}
+    """
+    encoding_maps = {}
+    non_numeric = df_raw.select_dtypes(exclude=[np.number]).columns.tolist()
+    non_numeric_features = [c for c in non_numeric if c != target_column]
+
+    for col in non_numeric_features:
+        if df_raw[col].nunique() <= 10:
+            categories = sorted(df_raw[col].dropna().unique())
+            encoding_maps[col] = {idx: cat for idx, cat in enumerate(categories)}
+
+    return encoding_maps
