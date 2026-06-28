@@ -1,0 +1,6 @@
+Complexity,Loss,Equation
+1,5.8031065e-7,"0.99896365"
+6,2.9531816e-7,"0.9953008 ^ abs(0.48141134 - debt_ratio)"
+8,2.842406e-7,"0.9942889 ^ (abs(debt_ratio - 0.48175707) ^ 1.1002533)"
+11,2.701252e-7,"(0.994964 ^ abs(0.50705594 - debt_ratio)) ^ sqrt(debt_ratio + 0.50705594)"
+13,2.66286e-7,"(0.9949345 ^ abs(0.53391546 - debt_ratio)) ^ sqrt(debt_ratio + sqrt(abs(debt_ratio)))"

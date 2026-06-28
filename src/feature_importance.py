@@ -162,11 +162,21 @@ def get_slider_anchors(df_clean, feature, target_column):
 
     col_data = df_clean[feature].dropna()
 
-    min_val    = round(float(col_data.min()), 4)
-    q1_val     = round(float(col_data.quantile(0.25)), 4)
-    median_val = round(float(col_data.median()), 4)
-    q3_val     = round(float(col_data.quantile(0.75)), 4)
-    max_val    = round(float(col_data.max()), 4)
+    # Detect if column is integer-like (e.g. Age, Year, Count)
+    is_integer_like = (
+        col_data.dtype in [int, np.int32, np.int64] or
+        (col_data.dtype in [float, np.float32, np.float64] and
+         (col_data == col_data.round(0)).all())
+    )
+
+    def fmt(v):
+        return int(round(v)) if is_integer_like else round(float(v), 4)
+
+    min_val    = fmt(col_data.min())
+    q1_val     = fmt(col_data.quantile(0.25))
+    median_val = fmt(col_data.median())
+    q3_val     = fmt(col_data.quantile(0.75))
+    max_val    = fmt(col_data.max())
 
     # Build ordered list and deduplicate while preserving order
     raw_pairs = [

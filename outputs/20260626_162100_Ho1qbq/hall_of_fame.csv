@@ -1,0 +1,4 @@
+Complexity,Loss,Equation
+1,0.00068774185,"0.99523926"
+4,0.0005469439,"cos(0.995648 ^ credit_score)"
+8,0.00041079687,"sin(cos(log(credit_score) + -0.19397509) / 0.6067764)"

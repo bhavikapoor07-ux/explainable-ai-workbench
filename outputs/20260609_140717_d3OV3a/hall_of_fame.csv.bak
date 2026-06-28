@@ -1,0 +1,11 @@
+Complexity,Loss,Equation
+1,0.07160329,"smoking"
+3,0.069166884,"smoking ^ 1.1720741"
+4,0.04338751,"sin(physical_activity * smoking)"
+6,0.036792334,"smoking ^ (cos(physical_activity) / 0.44354096)"
+7,0.0016919324,"smoking ^ (physical_activity ^ (physical_activity * -232.25496))"
+9,0.00053041236,"0.9504805 * (smoking ^ (physical_activity ^ (physical_activity * -213.42628)))"
+11,0.0004955616,"(smoking ^ (physical_activity ^ ((smoking * -213.42639) / 0.46112218))) * 0.9558253"
+12,0.00034156864,"(smoking ^ (physical_activity ^ (exp(smoking) * (physical_activity * -183.94441)))) * 0.95120525"
+13,0.0001785648,"0.9558253 * (smoking ^ (physical_activity ^ ((physical_activity * physical_activity) * (-213.42639 / 0.46112218))))"
+17,0.00016224629,"((((smoking * 0.20150521) / 0.096751966) * 0.47814056) ^ (physical_activity ^ ((physical_activity * physical_activity) * -462.84134))) * 0.95012665"

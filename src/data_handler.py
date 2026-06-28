@@ -393,6 +393,23 @@ def clean_data(df, target_column):
     if not cleaning_log:
         cleaning_log.append("No cleaning required. Dataset is already clean.")
 
+        # Final safety pass — fill any remaining NaN values that slipped through
+    for col in df_clean.columns:
+        if df_clean[col].isnull().any():
+            if df_clean[col].dtype in [float, int, np.float64, np.int64]:
+                df_clean[col] = df_clean[col].fillna(df_clean[col].median())
+            else:
+                df_clean[col] = df_clean[col].fillna(0)
+
+        # Final safety pass — fill any remaining NaN values
+        for col in df_clean.columns:
+            if df_clean[col].isnull().any():
+                if df_clean[col].dtype in [float, int, np.float64, np.int64]:
+                    df_clean[col] = df_clean[col].fillna(df_clean[col].median())
+                else:
+                    df_clean[col] = df_clean[col].fillna(0)
+
+
     return df_clean, cleaning_log
 
 

@@ -1,0 +1,8 @@
+Complexity,Loss,Equation
+1,5.2188992e-5,"0.0070081353"
+3,1.7943988e-5,"smoking * 0.01580695"
+5,1.5350146e-5,"(physical_activity * 0.03077897) ^ 1.4385746"
+7,1.4750871e-5,"((smoking * 1.021153) - smoking) - 0.0035680532"
+8,1.4719685e-5,"abs(((smoking * 1.021153) - smoking) - 0.0035680532)"
+13,1.33212925e-5,"(0.12821846 ^ ((physical_activity ^ physical_activity) * 0.16150731)) * ((physical_activity * smoking) * 0.022371888)"
+15,1.193632e-5,"((sin(sin(smoking)) * abs(smoking + -1.3652834)) * (sin(smoking) * 0.06695871)) * smoking"

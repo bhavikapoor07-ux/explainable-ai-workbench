@@ -1,0 +1,13 @@
+Complexity,Loss,Equation
+1,44.86399,"14.893301"
+3,5.065507,"Present_Price ^ 0.710748"
+5,4.4318185,"(Present_Price ^ 0.60437983) / 0.64259726"
+6,3.9114854,"sqrt(Present_Price * 8.077969) + -3.391618"
+7,2.7560663,"Year ^ ((-2.8586295 / Present_Price) + 0.43635836)"
+9,2.648305,"(Year ^ ((-3.180966 / Present_Price) + 0.43358326)) + 1.1465423"
+10,2.6208658,"sqrt((Year ^ ((-5.7700396 / Present_Price) + 0.87302554)) + 1.598122)"
+12,2.0417593,"cos(Present_Price / 4.4791455) + (Year ^ ((-2.7418578 / Present_Price) + 0.43369442))"
+13,1.9607254,"(Year ^ ((-2.728521 / Present_Price) + 0.43315077)) + sin(abs(Year / -0.70657265))"
+15,1.955734,"(Year ^ ((-2.7354527 / Present_Price) + 0.43329096)) + sin(Year / (0.5891141 / sin(-0.9875761)))"
+18,1.8634366,"cos((Present_Price / 0.42960313) ^ ((-2.639755 / Present_Price) + 0.51262397)) + (Year ^ ((-2.639755 / Present_Price) + 0.42960313))"
+20,1.8231506,"cos((Present_Price / 0.42960313) ^ ((-2.639755 / Present_Price) + 0.51262397)) + ((Present_Price + Year) ^ ((-2.639755 / Present_Price) + 0.42960313))"

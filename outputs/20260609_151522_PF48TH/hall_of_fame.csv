@@ -1,0 +1,13 @@
+Complexity,Loss,Equation
+1,5.2188992e-5,"0.007008143"
+3,1.7943985e-5,"physical_activity * 0.00790294"
+5,1.47508745e-5,"(physical_activity - 0.33736634) * 0.0105763385"
+6,1.25589395e-5,"sin(smoking * physical_activity) * 0.015188498"
+8,1.1072653e-5,"((sin(physical_activity) * physical_activity) - smoking) * 0.01863191"
+9,1.0102307e-5,"sin(sin(smoking * physical_activity) * physical_activity) * 0.01500905"
+12,9.880433e-6,"sin(physical_activity) * (((physical_activity - 0.6122535) * 0.010721512) / (smoking ^ physical_activity))"
+13,9.841343e-6,"sin(physical_activity) * abs(((0.60505027 - physical_activity) * 0.010611347) / (smoking ^ physical_activity))"
+14,9.616425e-6,"((sin(physical_activity) - 0.1480298) * ((physical_activity - 0.5865791) / (smoking ^ physical_activity))) * 0.012229874"
+15,9.551824e-6,"abs((((0.62271845 - physical_activity) / (smoking ^ physical_activity)) * -0.01343149) * (sin(physical_activity) - 0.18483321))"
+16,8.639783e-6,"((smoking ^ 1.9634359) * 0.122897714) * ((0.6393756 - physical_activity) * ((sin(physical_activity) * smoking) + -0.9988162))"
+19,8.624326e-6,"((smoking * sin(physical_activity)) + -1.0068388) * (((smoking ^ 1.9632728) * 0.13171515) * (sin(smoking ^ smoking) - physical_activity))"

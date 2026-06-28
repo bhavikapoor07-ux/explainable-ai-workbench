@@ -1,0 +1,10 @@
+Complexity,Loss,Equation
+1,3.5644636e-5,"0.9967818"
+4,2.8418352e-5,"cos(income ^ -0.22050257)"
+5,5.1186566e-6,"0.97455233 ^ (0.6639995 ^ employment_years)"
+7,5.0412814e-6,"0.97340614 ^ ((0.57103705 ^ employment_years) ^ 0.7308001)"
+9,3.7705333e-6,"0.97968465 ^ (0.44686154 ^ ((employment_years * 0.37716714) ^ 1.9190116))"
+11,3.584403e-6,"(0.97044295 ^ ((0.46201992 ^ employment_years) ^ 1.1054586)) ^ (employment_years + 0.5698007)"
+14,3.13999e-6,"0.9903831 ^ (sin(0.984682 ^ (employment_years ^ employment_years)) + (0.9840995 ^ (employment_years ^ employment_years)))"
+15,2.9026405e-6,"((0.974952 ^ sqrt(0.42204985 ^ employment_years)) ^ sin(abs(employment_years) ^ sin(employment_years))) ^ 1.3594043"
+16,2.575434e-6,"0.98697245 ^ (sqrt(0.98697245 ^ (employment_years ^ employment_years)) + (abs(-0.4450055) ^ (employment_years ^ abs(employment_years))))"

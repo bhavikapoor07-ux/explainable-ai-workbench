@@ -38,7 +38,8 @@ from src.symbolic_regression import (
     compute_fidelity,
     format_equation,
     get_equation_complexity,
-    get_fidelity_rating
+    get_fidelity_rating,
+    prewarm_julia
 )
 
 # =============================================================================
@@ -219,6 +220,18 @@ if "pysr_cache" not in st.session_state:
     st.session_state.pysr_cache = {}           # cache per feature pair
 if "show_desmos" not in st.session_state:
     st.session_state.show_desmos = False
+if "julia_warmed" not in st.session_state:
+    st.session_state.julia_warmed = False   # Flag: Julia pre-warming complete
+
+# =============================================================================
+# JULIA PRE-WARMING — Runs silently on first app load
+# Compiles Julia in the background while user reads the UI
+# By the time user reaches Symbolic Regression, Julia is already warm
+# =============================================================================
+
+if not st.session_state.julia_warmed:
+    prewarm_julia()
+    st.session_state.julia_warmed = True
 
 # =============================================================================
 # SIDEBAR
@@ -1097,10 +1110,9 @@ if (
                 st.session_state.show_symbolic = True
                 st.success(
                     f"✅ Features locked in! "
-                    f"X-Axis: **{axis_1}** | Y-Axis: **{axis_2}** | "
-                    f"Symbolic Regression is coming in Day 5."
+                    f"X-Axis: **{axis_1}** | Y-Axis: **{axis_2}**"
                 )
-                st.balloons()
+                st.rerun()
 
         # Mark importance as complete as soon as axes are selected
         # (not just when proceed is clicked)
@@ -1174,6 +1186,25 @@ if (
 
     # ── Run PySR Button ───────────────────────────────────────────────────────
     st.markdown("<br>", unsafe_allow_html=True)
+
+    # Honest timing warning
+    if not st.session_state.julia_warmed:
+        st.markdown("""
+        <div class='custom-warning'>
+            ⚠️ <strong>Engine is still initializing.</strong>
+            Please wait a moment before clicking Discover Equation.
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown("""
+        <div class='custom-info'>
+            ✅ <strong>Engine is ready.</strong>
+            Quick: ~10-20 sec &nbsp;|&nbsp;
+            Balanced: ~30-60 sec &nbsp;|&nbsp;
+            Deep Search: ~2-3 min.
+        </div>
+        """, unsafe_allow_html=True)
+
     col_r1, col_r2, col_r3 = st.columns([1, 2, 1])
     with col_r2:
         run_button = st.button(
@@ -1192,75 +1223,105 @@ if (
     if run_button or cache_key in st.session_state.pysr_cache:
 
         if cache_key not in st.session_state.pysr_cache:
-            with st.spinner(
-                f"🔬 PySR searching for equations... "
-                f"({mode_info['estimated_time']}). "
-                f"Julia is running — please wait."
-            ):
-                try:
-                    # Prepare data
-                    X_pysr, y_pysr = prepare_pysr_data(
-                        df_clean     = st.session_state.df_clean,
-                        target_column= st.session_state.target_column,
-                        model        = st.session_state.trained_models[
-                                           st.session_state.selected_model_name],
-                        feature_names= st.session_state.data_splits["feature_names"],
-                        axis_feature_1=ax1,
-                        axis_feature_2=ax2,
-                        anchored_values=st.session_state.anchored_values,
-                        problem_type = st.session_state.problem_type
-                    )
 
-                    # Run PySR
-                    pysr_model, best_eq, all_eqs = run_pysr(
-                        X_pysr,
-                        y_pysr,
-                        compute_mode=compute_mode,
-                        complexity_mode=complexity_mode
-                    )
+            # ── Progressive status messages ───────────────────────────────────
+            status_box = st.empty()
 
-                    # Compute fidelity
-                    fidelity, y_surrogate, mae = compute_fidelity(
-                        pysr_model, None, X_pysr, y_pysr
-                    )
+            def show_status(msg, icon="⏳"):
+                status_box.markdown(f"""
+                <div style='background:#1a1f35; border:1px solid #4fc3f7;
+                            border-radius:8px; padding:14px 20px; margin:8px 0;
+                            display:flex; align-items:center; gap:12px;'>
+                    <span style='font-size:1.3rem; animation:spin 1s linear infinite;'>{icon}</span>
+                    <span style='color:#e0e0e0; font-size:0.95rem;'>{msg}</span>
+                </div>
+                <style>
+                @keyframes spin {{
+                    0% {{ transform: rotate(0deg); }}
+                    100% {{ transform: rotate(360deg); }}
+                }}
+                </style>
+                """, unsafe_allow_html=True)
 
-                    # Format equation
-                    formatted_eq, desmos_eq = format_equation(best_eq, ax1, ax2)
+            show_status("Initializing Julia and PySR engine... this may take a moment.", "🔧")
 
-                    # Complexity info
-                    complexity_info = get_equation_complexity(pysr_model)
+            try:
+                show_status("Preparing training data from model predictions...", "📊")
 
-                    # Cache everything
-                    st.session_state.pysr_cache[cache_key] = {
-                        "pysr_model":     pysr_model,
-                        "best_equation":  formatted_eq,
-                        "desmos_equation":desmos_eq,
-                        "fidelity_score": fidelity,
-                        "mae":            mae,
-                        "all_equations":  all_eqs,
-                        "complexity_info":complexity_info,
-                        "X_pysr":         X_pysr,
-                        "y_pysr":         y_pysr,
-                        "y_surrogate":    y_surrogate
-                    }
+                # Prepare data
+                X_pysr, y_pysr = prepare_pysr_data(
+                    df_clean     = st.session_state.df_clean,
+                    target_column= st.session_state.target_column,
+                    model        = st.session_state.trained_models[
+                                       st.session_state.selected_model_name],
+                    feature_names= st.session_state.data_splits["feature_names"],
+                    axis_feature_1=ax1,
+                    axis_feature_2=ax2,
+                    anchored_values=st.session_state.anchored_values,
+                    problem_type = st.session_state.problem_type
+                )
 
-                    # Save to session state
-                    st.session_state.pysr_model      = pysr_model
-                    st.session_state.best_equation   = formatted_eq
-                    st.session_state.desmos_equation = desmos_eq
-                    st.session_state.fidelity_score  = fidelity
-                    st.session_state.symbolic_complete = True
+                show_status(
+                    f"PySR is searching for equations in {compute_mode} mode "
+                    f"({mode_info['estimated_time']} estimated). "
+                    f" — please do not close the app.",
+                    "🔬"
+                )
 
-                    st.success("✅ Equation discovered successfully!")
-                    st.rerun()
+                # Run PySR
+                pysr_model, best_eq, all_eqs = run_pysr(
+                    X_pysr,
+                    y_pysr,
+                    compute_mode=compute_mode,
+                    complexity_mode=complexity_mode
+                )
 
-                except Exception as e:
-                    st.error(f"❌ PySR encountered an error: {str(e)}")
-                    st.info(
-                        "💡 Try switching to Quick mode or selecting different features. "
-                        "If this is your first run, Julia may still be initializing — "
-                        "wait 30 seconds and try again."
-                    )
+                show_status("Equation found! Computing fidelity score...", "🎯")
+
+                # Compute fidelity
+                fidelity, y_surrogate, mae = compute_fidelity(
+                    pysr_model, None, X_pysr, y_pysr
+                )
+
+                show_status("Formatting equation for display and Desmos...", "✍️")
+
+                # Format equation
+                formatted_eq, desmos_eq = format_equation(best_eq, ax1, ax2)
+
+                # Complexity info
+                complexity_info = get_equation_complexity(pysr_model)
+
+                # Cache everything
+                st.session_state.pysr_cache[cache_key] = {
+                    "pysr_model":     pysr_model,
+                    "best_equation":  formatted_eq,
+                    "desmos_equation":desmos_eq,
+                    "fidelity_score": fidelity,
+                    "mae":            mae,
+                    "all_equations":  all_eqs,
+                    "complexity_info":complexity_info,
+                    "X_pysr":         X_pysr,
+                    "y_pysr":         y_pysr,
+                    "y_surrogate":    y_surrogate
+                }
+
+                # Save to session state
+                st.session_state.pysr_model      = pysr_model
+                st.session_state.best_equation   = formatted_eq
+                st.session_state.desmos_equation = desmos_eq
+                st.session_state.fidelity_score  = fidelity
+                st.session_state.symbolic_complete = True
+
+                show_status("✅ Equation discovered successfully! Loading results...")
+                st.rerun()
+
+            except Exception as e:
+                status_box.empty()
+                st.error(f"❌ PySR encountered an error: {str(e)}")
+                st.info(
+                    "💡 Try switching to Quick mode or selecting different features. "
+                    "If this is the first run, try again in a few seconds."
+                )
 
         # ── Display Results ───────────────────────────────────────────────────
         if cache_key in st.session_state.pysr_cache:
@@ -1359,14 +1420,15 @@ if (
                     <div class='metric-label'>Fidelity Score</div>
                 </div>""", unsafe_allow_html=True)
 
-            # ── All Discovered Equations Table ────────────────────────────────
+            # ── All Discovered Equations Table + Manual Selector ─────────────
             st.markdown("<br>", unsafe_allow_html=True)
             with st.expander("📋 All Discovered Equations (PySR Pareto Front)", expanded=False):
                 st.markdown(
                     "<p style='color:#8892b0; font-size:0.85rem;'>"
                     "PySR returns a Pareto front — equations at different "
                     "complexity vs accuracy tradeoffs. The best equation "
-                    "is automatically selected based on your complexity preference.</p>",
+                    "is automatically selected based on your complexity preference. "
+                    "You can also manually select any equation from the table below.</p>",
                     unsafe_allow_html=True
                 )
                 try:
@@ -1374,7 +1436,83 @@ if (
                         ["complexity", "loss", "equation"]
                     ].copy()
                     eq_df.columns = ["Complexity", "Loss", "Equation"]
-                    st.dataframe(eq_df, use_container_width=True, hide_index=True)
+                    st.dataframe(
+                        eq_df,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "Equation": st.column_config.TextColumn(
+                                "Equation",
+                                width="large"
+                            )
+                        }
+                    )
+
+                    # ── Manual Equation Selection ─────────────────────────────
+                    st.markdown("---")
+                    st.markdown(
+                        "**🎯 Select Equation Manually**",
+                    )
+                    st.markdown(
+                        "<p style='color:#8892b0; font-size:0.85rem;'>"
+                        "Want to use a specific equation from the table above? "
+                        "Select it by complexity level. Higher complexity = "
+                        "more accurate but harder to interpret.</p>",
+                        unsafe_allow_html=True
+                    )
+
+                    complexity_options = eq_df["Complexity"].tolist()
+                    equation_options  = eq_df["Equation"].tolist()
+                    loss_options      = eq_df["Loss"].tolist()
+
+                    # Build display labels for the radio buttons
+                    radio_labels = [
+                        f"Complexity {c}  |  Loss {l:.4f}  →  {e}"
+                        for c, l, e in zip(complexity_options, loss_options, equation_options)
+                    ]
+
+                    # Find the currently active equation's index
+                    current_eq = cached["best_equation"]
+                    try:
+                        current_idx = equation_options.index(current_eq)
+                    except ValueError:
+                        current_idx = len(equation_options) - 1
+
+                    selected_label = st.radio(
+                        "Choose equation:",
+                        options=radio_labels,
+                        index=current_idx,
+                        key="manual_eq_select"
+                    )
+
+                    selected_idx = radio_labels.index(selected_label)
+                    selected_eq  = str(equation_options[selected_idx])
+                    selected_complexity = complexity_options[selected_idx]
+                    selected_loss = loss_options[selected_idx]
+
+                    # Apply button
+                    if st.button(
+                        "✅ Use This Equation",
+                        key="apply_manual_eq",
+                        use_container_width=True
+                    ):
+                        # Format the manually selected equation for Desmos
+                        formatted_eq, desmos_eq = format_equation(
+                            selected_eq, ax1, ax2
+                        )
+                        # Update the cache with manually selected equation
+                        st.session_state.pysr_cache[cache_key]["best_equation"]   = formatted_eq
+                        st.session_state.pysr_cache[cache_key]["desmos_equation"] = desmos_eq
+                        st.session_state.pysr_cache[cache_key]["complexity_info"]["complexity"] = int(selected_complexity)
+                        st.session_state.pysr_cache[cache_key]["complexity_info"]["loss"] = float(selected_loss)
+                        st.session_state.best_equation   = formatted_eq
+                        st.session_state.desmos_equation = desmos_eq
+                        st.success(
+                            f"✅ Equation updated! "
+                            f"Now using complexity {selected_complexity} equation."
+                        )
+                        st.rerun()
+
                 except Exception:
                     st.info("Equation table not available for this run.")
 
@@ -1392,15 +1530,15 @@ if (
                 f"Where x = {ax1} and y = {ax2}"
             )
 
-            # ── Recompute Option ──────────────────────────────────────────────
+            # ── Info message ──────────────────────────────────────────────────
             st.markdown("<br>", unsafe_allow_html=True)
             st.markdown("""
             <div class='custom-info'>
                 💡 <strong>Want a different equation?</strong>
                 Change the compute mode or complexity preference above
-                and click "Discover Equation" again.
-                Sliders update the graph instantly using the existing surrogate —
-                only click Recompute if you want a brand new equation.
+                and click "Discover Equation" again for a fresh search.
+                Or open the Pareto Front table above to manually pick
+                any equation by complexity level.
             </div>
             """, unsafe_allow_html=True)
 
@@ -1416,18 +1554,19 @@ if (
                 ):
                     st.session_state.symbolic_complete = True
                     st.session_state.show_desmos = True
-                    st.success("✅ Equation locked in! Desmos Visualization is coming in Day 6.")
-                    st.balloons()
+                    st.success("✅ Equation locked in! Proceeding to Desmos Visualization.")
+                    st.rerun()
 
-# =============================================================================
-# EMPTY STATE — No data loaded yet
-# =============================================================================
+    # =============================================================================
+    # EMPTY STATE — Only shown when no data is loaded at all
+    # =============================================================================
 
-else:
-    st.markdown("""
-    <div style='text-align:center; padding: 60px 20px; color:#8892b0;'>
-        <div style='font-size:4rem;'>📂</div>
-        <h3 style='color:#4fc3f7;'>Upload a dataset or choose a demo to get started</h3>
-        <p>Supported format: CSV files</p>
-    </div>
-    """, unsafe_allow_html=True)
+    else:
+        if not st.session_state.data_loaded:
+            st.markdown("""
+            <div style='text-align:center; padding: 60px 20px; color:#8892b0;'>
+                <div style='font-size:4rem;'>📂</div>
+                <h3 style='color:#4fc3f7;'>Upload a dataset or choose a demo to get started</h3>
+                <p>Supported format: CSV files</p>
+            </div>
+            """, unsafe_allow_html=True)

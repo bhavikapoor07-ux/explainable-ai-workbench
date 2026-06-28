@@ -1,0 +1,9 @@
+Complexity,Loss,Equation
+1,0.00068774185,"0.99523616"
+4,0.0006645042,"cos(income ^ -0.20566119)"
+5,0.00059714576,"sqrt(sqrt(cos(log(credit_score))))"
+6,0.00058510597,"(log(income) ^ 0.2694553) * 0.52042437"
+7,0.00051364326,"sin(sqrt(credit_score ^ -0.54609776) * 8.988767)"
+12,0.00042945484,"exp(0.0031609687 - (((income * credit_score) ^ 0.9536299) / exp(sqrt(credit_score))))"
+14,0.00042678145,"exp((1.1999655 / credit_score) - (((income * credit_score) ^ 0.95519) / exp(sqrt(credit_score))))"
+15,0.00042376784,"exp((1.1425236 / sqrt(income)) - (((income * credit_score) ^ 0.9601083) / exp(sqrt(credit_score))))"

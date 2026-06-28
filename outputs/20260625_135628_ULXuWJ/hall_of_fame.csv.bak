@@ -1,0 +1,9 @@
+Complexity,Loss,Equation
+1,19.465887,"73.79993"
+3,7.7885385,"Tutoring_Sessions + 69.79992"
+4,7.7885375,"abs(Tutoring_Sessions + 69.80011)"
+5,5.922144,"67.43838 - (Tutoring_Sessions * -1.5903918)"
+6,5.573783,"abs((Tutoring_Sessions ^ 1.2239107) - -68.06826)"
+8,5.2213464,"(cos(Tutoring_Sessions) + 67.572754) - (Tutoring_Sessions * -1.5257283)"
+9,4.150654,"abs((abs(Hours_Studied + -8.53932) * 0.36387786) + 68.23397)"
+10,1.6809113,"exp(3.9834757 - Hours_Studied) + (65.56447 - (Tutoring_Sessions * -1.9388058))"

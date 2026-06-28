@@ -1,0 +1,4 @@
+Complexity,Loss,Equation
+1,22.585398,"71.87328"
+3,5.9457245,"Tutoring_Sessions + 67.87378"
+5,4.627509e-12,"(Hours_Studied * 0.38209158) + 63.276695"

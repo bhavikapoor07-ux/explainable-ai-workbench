@@ -54,6 +54,9 @@ def prepare_data(df_clean, target_column, test_size=0.2, random_state=42):
         random_state=random_state
     )
 
+    # Safety check — replace any remaining NaN/Inf with 0
+    X_train = np.nan_to_num(X_train, nan=0.0, posinf=0.0, neginf=0.0)
+    X_test = np.nan_to_num(X_test, nan=0.0, posinf=0.0, neginf=0.0)
     return X_train, X_test, y_train, y_test, feature_columns
 
 

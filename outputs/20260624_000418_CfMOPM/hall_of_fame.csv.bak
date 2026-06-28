@@ -1,0 +1,6 @@
+Complexity,Loss,Equation
+1,1.2834291e10,"285645.84"
+3,2.7093306e8,"SquareFootage / 0.008152668"
+5,8.937807e7,"(SquareFootage + 285.50754) * 112.217155"
+7,8.937806e7,"(SquareFootage * 112.18943) + (AgeOfHouse + 32050.1)"
+10,8.670369e7,"((SquareFootage * 235.88382) ^ 0.5530264) * abs(AgeOfHouse + 142.18697)"

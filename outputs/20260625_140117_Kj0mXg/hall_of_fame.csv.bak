@@ -1,0 +1,10 @@
+Complexity,Loss,Equation
+1,19.465887,"73.79993"
+3,7.788539,"Tutoring_Sessions + 69.79998"
+6,5.9221435,"abs((Hours_Studied * -0.2958843) - 67.14256)"
+7,5.922143,"((Hours_Studied + Hours_Studied) * 0.14794429) + 67.14243"
+10,4.724178,"(cos(log(sqrt(Hours_Studied))) + 1.4508675) * (Hours_Studied + 27.420246)"
+12,4.7241774,"((Hours_Studied + 9.211698) - -18.208426) * (cos(log(sqrt(Hours_Studied))) + 1.450873)"
+14,3.4889677,"sqrt(Hours_Studied + sqrt(Hours_Studied)) * (((3.3779423 / sqrt(Hours_Studied)) * 14.242067) - -3.9839294)"
+17,3.4779093,"sqrt(Hours_Studied + 59.662594) * (((sqrt(Hours_Studied) + sqrt(Hours_Studied)) * sin(1.0838355 / Hours_Studied)) - -7.620137)"
+18,3.1792166,"sqrt((Hours_Studied + Tutoring_Sessions) + 52.04691) * (((sqrt(Hours_Studied) + sqrt(Hours_Studied)) * (1.4565247 / Hours_Studied)) - -7.588878)"

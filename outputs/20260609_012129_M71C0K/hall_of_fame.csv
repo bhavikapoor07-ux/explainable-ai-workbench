@@ -1,0 +1,8 @@
+Complexity,Loss,Equation
+1,48.864037,"32.63845"
+3,1.6504271,"attendance * 0.43536136"
+5,1.1732259,"(attendance * 0.48281583) + -3.7006848"
+8,0.67928016,"(cos(study_hours) + -3.470878) + (attendance * 0.48176345)"
+11,0.3997157,"exp((study_hours ^ 0.26907918) + 1.9206772) + sin(study_hours + 6.8741894)"
+13,0.38320172,"exp((study_hours ^ 0.2941386) + 1.7250705) + (sin(study_hours + 0.68061316) + 3.8262513)"
+14,0.34325388,"exp(1.8677479 + (study_hours ^ 0.21966967)) + (study_hours + (cos(study_hours) + sin(study_hours)))"
