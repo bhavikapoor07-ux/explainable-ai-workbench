@@ -1,0 +1,9 @@
+Complexity,Loss,Equation
+1,1.3704022e10,"279520.03"
+3,1.5180683e8,"SquareFootage * 122.39833"
+5,1.0112361e8,"(SquareFootage + 150.99641) * 115.933105"
+7,1.01123576e8,"((SquareFootage + 160.49617) * 115.9334) + -1101.2079"
+8,9.99914e7,"(SquareFootage + 150.1522) * (cos(AgeOfHouse) + 115.99471)"
+10,9.9971256e7,"(151.0261 + SquareFootage) * (115.932014 + cos(AgeOfHouse + 0.06307658))"
+11,9.370775e7,"(((SquareFootage + 135.18112) + (-506.1504 / AgeOfHouse)) * 113.78374) - -9324.712"
+15,9.370604e7,"abs((sqrt(SquareFootage) + ((SquareFootage * 128.2888) / AgeOfHouse)) + ((SquareFootage * -113.79297) + -29333.242))"

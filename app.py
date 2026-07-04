@@ -1,10 +1,12 @@
 # =============================================================================
 # app.py
 # Explainable AI Workbench — Main Application Entry Point
-# Day 3: Model Arena Module
+# Day 6: Desmos Visualization
 # =============================================================================
 
+import time
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -34,12 +36,21 @@ from src.symbolic_regression import (
     COMPUTE_MODES,
     COMPLEXITY_MODES,
     prepare_pysr_data,
-    run_pysr,
     compute_fidelity,
     format_equation,
     get_equation_complexity,
     get_fidelity_rating,
-    prewarm_julia
+    prewarm_julia,
+    start_pysr_thread,
+    get_thread_status,
+    get_thread_result,
+    get_thread_error,
+    get_elapsed_seconds,
+    clear_thread,
+)
+from src.desmos_visualizer import (
+    build_desmos_html,
+    get_feature_bounds,
 )
 
 # =============================================================================
@@ -220,8 +231,19 @@ if "pysr_cache" not in st.session_state:
     st.session_state.pysr_cache = {}           # cache per feature pair
 if "show_desmos" not in st.session_state:
     st.session_state.show_desmos = False
+if "desmos_complete" not in st.session_state:
+    st.session_state.desmos_complete = False
+if "show_gemini" not in st.session_state:
+    st.session_state.show_gemini = False
 if "julia_warmed" not in st.session_state:
-    st.session_state.julia_warmed = False   # Flag: Julia pre-warming complete
+    st.session_state.julia_warmed = False
+# Thread management state
+if "pysr_waiting_for" not in st.session_state:
+    st.session_state.pysr_waiting_for = None  # cache_key we're polling for
+if "pysr_pending_X" not in st.session_state:
+    st.session_state.pysr_pending_X = None    # X stored while thread runs
+if "pysr_pending_y" not in st.session_state:
+    st.session_state.pysr_pending_y = None    # y stored while thread runs
 
 # =============================================================================
 # JULIA PRE-WARMING — Runs silently on first app load
@@ -230,8 +252,26 @@ if "julia_warmed" not in st.session_state:
 # =============================================================================
 
 if not st.session_state.julia_warmed:
+    warm_container = st.empty()
+    warm_container.markdown("""
+    <div style='background:linear-gradient(135deg,#1a1f35,#1e2540);
+                border:1px solid #4fc3f7;
+                border-radius:10px;
+                padding:16px 24px;
+                margin-bottom:16px;
+                text-align:center;'>
+        <span style='font-size:1.1rem;'>⚙️</span>
+        <span style='color:#8892b0; margin-left:8px; font-size:0.95rem;'>
+            Initializing Julia + PySR engine in the background...
+            This takes 1-2 minutes on first load and dramatically
+            speeds up equation discovery later.
+            You can start uploading your dataset right now.
+        </span>
+    </div>
+    """, unsafe_allow_html=True)
     prewarm_julia()
     st.session_state.julia_warmed = True
+    warm_container.empty()
 
 # =============================================================================
 # SIDEBAR
@@ -253,7 +293,7 @@ with st.sidebar:
         "Model Arena": st.session_state.arena_complete,
         "Feature Importance": st.session_state.importance_complete,
         "Symbolic Regression": st.session_state.symbolic_complete,
-        "Desmos Visualization": False,
+        "Desmos Visualization": st.session_state.desmos_complete,
         "AI Explanation": False,
     }
     icons = {
@@ -1181,27 +1221,33 @@ if (
             unsafe_allow_html=True
         )
 
-    # ── Cache key for this feature pair + settings ────────────────────────────
+    # ── Cache key — unique per feature pair + settings ────────────────────────
     cache_key = f"{ax1}__{ax2}__{compute_mode}__{complexity_mode}"
 
-    # ── Run PySR Button ───────────────────────────────────────────────────────
+    # ── Run PySR Button + readiness indicator ─────────────────────────────────
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Honest timing warning
+    waiting_for        = st.session_state.get("pysr_waiting_for")
+    current_thr_status = get_thread_status(cache_key)
+    is_running         = (
+        waiting_for == cache_key
+        and current_thr_status in ["starting", "running"]
+    )
+
     if not st.session_state.julia_warmed:
         st.markdown("""
         <div class='custom-warning'>
-            ⚠️ <strong>Engine is still initializing.</strong>
-            Please wait a moment before clicking Discover Equation.
+            ⚠️ <strong>Julia is still initializing.</strong>
+            Please wait — the banner at the top will disappear when ready.
         </div>
         """, unsafe_allow_html=True)
-    else:
-        st.markdown("""
+    elif not is_running:
+        st.markdown(f"""
         <div class='custom-info'>
-            ✅ <strong>Engine is ready.</strong>
-            Quick: ~10-20 sec &nbsp;|&nbsp;
-            Balanced: ~30-60 sec &nbsp;|&nbsp;
-            Deep Search: ~2-3 min.
+            ✅ <strong>Julia + PySR engine is ready.</strong> &nbsp;
+            Quick: ~30–90 sec &nbsp;|&nbsp;
+            Balanced: ~1–3 min &nbsp;|&nbsp;
+            Deep Search: ~3–5 min (hard timeout at 5 min).
         </div>
         """, unsafe_allow_html=True)
 
@@ -1211,362 +1257,624 @@ if (
             "🔬 Discover Equation",
             use_container_width=True,
             type="primary",
-            key="run_pysr_btn"
+            key="run_pysr_btn",
+            disabled=is_running   # Prevent double-clicking while running
         )
 
+    # ── STEP A: Button clicked → prepare data, launch background thread ───────
     if run_button:
-        # Clear cached result for fresh run
+        # Clear any previous result for this exact cache key
         if cache_key in st.session_state.pysr_cache:
             del st.session_state.pysr_cache[cache_key]
+        clear_thread(cache_key)
 
-    # ── Run PySR if not cached ────────────────────────────────────────────────
-    if run_button or cache_key in st.session_state.pysr_cache:
+        # Prepare training data (fast, no Julia involved)
+        with st.spinner("📊 Preparing training data from model predictions..."):
+            X_pysr, y_pysr = prepare_pysr_data(
+                df_clean       = st.session_state.df_clean,
+                target_column  = st.session_state.target_column,
+                model          = st.session_state.trained_models[
+                                     st.session_state.selected_model_name],
+                feature_names  = st.session_state.data_splits["feature_names"],
+                axis_feature_1 = ax1,
+                axis_feature_2 = ax2,
+                anchored_values= st.session_state.anchored_values,
+                problem_type   = st.session_state.problem_type
+            )
 
-        if cache_key not in st.session_state.pysr_cache:
+        # Persist X and y so the polling loop can compute fidelity when done
+        st.session_state.pysr_pending_X = X_pysr
+        st.session_state.pysr_pending_y = y_pysr
 
-            # ── Progressive status messages ───────────────────────────────────
-            status_box = st.empty()
+        # Launch PySR in a daemon background thread
+        start_pysr_thread(X_pysr, y_pysr, compute_mode, complexity_mode, cache_key)
+        st.session_state.pysr_waiting_for = cache_key
+        st.rerun()
 
-            def show_status(msg, icon="⏳"):
-                status_box.markdown(f"""
-                <div style='background:#1a1f35; border:1px solid #4fc3f7;
-                            border-radius:8px; padding:14px 20px; margin:8px 0;
-                            display:flex; align-items:center; gap:12px;'>
-                    <span style='font-size:1.3rem; animation:spin 1s linear infinite;'>{icon}</span>
-                    <span style='color:#e0e0e0; font-size:0.95rem;'>{msg}</span>
-                </div>
-                <style>
-                @keyframes spin {{
-                    0% {{ transform: rotate(0deg); }}
-                    100% {{ transform: rotate(360deg); }}
-                }}
-                </style>
-                """, unsafe_allow_html=True)
+    # ── STEP B: Thread is running → show live progress, poll every 3s ─────────
+    waiting_for    = st.session_state.get("pysr_waiting_for")
+    thread_status  = get_thread_status(cache_key)
 
-            show_status("Initializing Julia and PySR engine... this may take a moment.", "🔧")
+    if waiting_for == cache_key and thread_status in ["starting", "running"]:
+        elapsed   = get_elapsed_seconds(cache_key)
+        timeout   = COMPUTE_MODES[compute_mode]["timeout_in_seconds"]
+        remaining = max(0, timeout - elapsed)
+        progress  = min(100, int(elapsed / timeout * 100))
 
-            try:
-                show_status("Preparing training data from model predictions...", "📊")
+        # Phase-specific message based on elapsed time
+        if elapsed < 15:
+            phase_msg = "Initializing Julia engine and compiling equation grammar..."
+        elif elapsed < 40:
+            phase_msg = "Exploring initial population of candidate equations..."
+        elif elapsed < 90:
+            phase_msg = "Evolving equations through genetic programming operators..."
+        else:
+            phase_msg = (
+                f"Refining best candidates across populations... "
+                f"Auto-stop in {remaining}s."
+            )
 
-                # Prepare data
-                X_pysr, y_pysr = prepare_pysr_data(
-                    df_clean     = st.session_state.df_clean,
-                    target_column= st.session_state.target_column,
-                    model        = st.session_state.trained_models[
-                                       st.session_state.selected_model_name],
-                    feature_names= st.session_state.data_splits["feature_names"],
-                    axis_feature_1=ax1,
-                    axis_feature_2=ax2,
-                    anchored_values=st.session_state.anchored_values,
-                    problem_type = st.session_state.problem_type
-                )
+        st.markdown(f"""
+        <div style='background:#1a1f35; border:1px solid #4fc3f7;
+                    border-radius:10px; padding:20px 24px; margin:12px 0;'>
+            <div style='display:flex; align-items:center; gap:12px; margin-bottom:10px;'>
+                <span style='font-size:1.5rem;'>🔬</span>
+                <span style='color:#4fc3f7; font-weight:700; font-size:1.05rem;'>
+                    PySR Equation Search In Progress
+                </span>
+            </div>
+            <div style='color:#e0e0e0; font-size:0.92rem; margin-bottom:14px;'>
+                {phase_msg}
+            </div>
+            <div style='display:flex; justify-content:space-between; margin-bottom:10px;'>
+                <span style='color:#8892b0; font-size:0.85rem;'>
+                    ⏱️ Elapsed: <strong style='color:#4fc3f7;'>{elapsed}s</strong>
+                </span>
+                <span style='color:#8892b0; font-size:0.85rem;'>
+                    Mode: <strong style='color:#4fc3f7;'>{compute_mode}</strong>
+                </span>
+                <span style='color:#8892b0; font-size:0.85rem;'>
+                    Hard cap: <strong style='color:#4fc3f7;'>{timeout}s</strong>
+                </span>
+            </div>
+            <div style='background:#0e1117; border-radius:6px;
+                        height:6px; overflow:hidden;'>
+                <div style='background:linear-gradient(90deg,#4fc3f7,#0288d1);
+                            height:6px; width:{progress}%;
+                            transition:width 0.5s ease;'></div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-                show_status(
-                    f"PySR is searching for equations in {compute_mode} mode "
-                    f"({mode_info['estimated_time']} estimated). "
-                    f" — please do not close the app.",
-                    "🔬"
-                )
+        with st.spinner(
+            f"⏳ Julia + PySR running — {compute_mode} / {complexity_mode} — "
+            f"please wait... ({elapsed}s elapsed)"
+        ):
+            st.info(
+                "🔒 Julia is running in the background. "
+                "Do not close or refresh this tab. "
+                "This page updates automatically every 3 seconds."
+            )
+            time.sleep(3)   # 3-second poll interval
 
-                # Run PySR
-                pysr_model, best_eq, all_eqs = run_pysr(
-                    X_pysr,
-                    y_pysr,
-                    compute_mode=compute_mode,
-                    complexity_mode=complexity_mode
-                )
+        st.rerun()
 
-                show_status("Equation found! Computing fidelity score...", "🎯")
+    # ── STEP C: Thread complete → collect result, compute fidelity, cache ──────
+    elif waiting_for == cache_key and thread_status == "complete":
+        with st.spinner("🎯 Equation found — computing fidelity and formatting..."):
+            raw_model, raw_eq, raw_all_eqs = get_thread_result(cache_key)
 
-                # Compute fidelity
-                fidelity, y_surrogate, mae = compute_fidelity(
-                    pysr_model, None, X_pysr, y_pysr
-                )
+            X_pysr = st.session_state.pysr_pending_X
+            y_pysr = st.session_state.pysr_pending_y
 
-                show_status("Formatting equation for display and Desmos...", "✍️")
+            fidelity, y_surrogate, mae = compute_fidelity(
+                raw_model, None, X_pysr, y_pysr
+            )
+            formatted_eq, desmos_eq = format_equation(raw_eq, ax1, ax2)
+            complexity_info         = get_equation_complexity(raw_model)
 
-                # Format equation
-                formatted_eq, desmos_eq = format_equation(best_eq, ax1, ax2)
+            # Store everything in the per-pair cache
+            st.session_state.pysr_cache[cache_key] = {
+                "pysr_model":      raw_model,
+                "best_equation":   formatted_eq,
+                "desmos_equation": desmos_eq,
+                "fidelity_score":  fidelity,
+                "mae":             mae,
+                "all_equations":   raw_all_eqs,
+                "complexity_info": complexity_info,
+                "X_pysr":          X_pysr,
+                "y_pysr":          y_pysr,
+                "y_surrogate":     y_surrogate,
+            }
 
-                # Complexity info
-                complexity_info = get_equation_complexity(pysr_model)
+            # Top-level session state for Desmos phase
+            st.session_state.pysr_model        = raw_model
+            st.session_state.best_equation     = formatted_eq
+            st.session_state.desmos_equation   = desmos_eq
+            st.session_state.fidelity_score    = fidelity
+            st.session_state.symbolic_complete = True
 
-                # Cache everything
-                st.session_state.pysr_cache[cache_key] = {
-                    "pysr_model":     pysr_model,
-                    "best_equation":  formatted_eq,
-                    "desmos_equation":desmos_eq,
-                    "fidelity_score": fidelity,
-                    "mae":            mae,
-                    "all_equations":  all_eqs,
-                    "complexity_info":complexity_info,
-                    "X_pysr":         X_pysr,
-                    "y_pysr":         y_pysr,
-                    "y_surrogate":    y_surrogate
-                }
+            # Clean up thread state
+            clear_thread(cache_key)
+            st.session_state.pysr_waiting_for = None
 
-                # Save to session state
-                st.session_state.pysr_model      = pysr_model
-                st.session_state.best_equation   = formatted_eq
-                st.session_state.desmos_equation = desmos_eq
-                st.session_state.fidelity_score  = fidelity
-                st.session_state.symbolic_complete = True
+        st.success("✅ Equation discovered successfully!")
+        st.rerun()
 
-                show_status("✅ Equation discovered successfully! Loading results...")
-                st.rerun()
+    # ── STEP D: Thread error → report and clean up ────────────────────────────
+    elif waiting_for == cache_key and thread_status == "error":
+        error_msg = get_thread_error(cache_key)
+        clear_thread(cache_key)
+        st.session_state.pysr_waiting_for = None
+        st.error(f"❌ PySR encountered an error: {error_msg}")
+        st.info(
+            "💡 Try Quick mode first. "
+            "If this is the first run after an app restart, "
+            "Julia needs 30–60 s to re-initialize — wait and try again."
+        )
 
-            except Exception as e:
-                status_box.empty()
-                st.error(f"❌ PySR encountered an error: {str(e)}")
-                st.info(
-                    "💡 Try switching to Quick mode or selecting different features. "
-                    "If this is the first run, try again in a few seconds."
-                )
+    # ── STEP E: Display cached result ─────────────────────────────────────────
+    if (
+        cache_key in st.session_state.pysr_cache
+        and st.session_state.get("pysr_waiting_for") != cache_key
+    ):
+        cached = st.session_state.pysr_cache[cache_key]
 
-        # ── Display Results ───────────────────────────────────────────────────
-        if cache_key in st.session_state.pysr_cache:
-            cached = st.session_state.pysr_cache[cache_key]
+        st.markdown("---")
+        st.markdown("### 📐 Discovered Equation")
 
-            st.markdown("---")
-            st.markdown("### 📐 Discovered Equation")
+        # Equation display box
+        st.markdown(f"""
+        <div style='background:linear-gradient(135deg,#1a1f35,#1e2540);
+                    border:1px solid #4fc3f7;
+                    border-radius:12px;
+                    padding:24px 32px;
+                    text-align:center;
+                    margin:16px 0;'>
+            <p style='color:#8892b0; font-size:0.85rem; margin-bottom:8px;'>
+                Surrogate Equation
+            </p>
+            <p style='color:#4fc3f7; font-size:1.5rem; font-weight:700;
+                      font-family:monospace; letter-spacing:1px;'>
+                f({ax1}, {ax2}) = {cached['best_equation']}
+            </p>
+            <p style='color:#8892b0; font-size:0.8rem; margin-top:12px;'>
+                Holding remaining features at anchored values
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
 
-            # Equation display box
+        # ── Fidelity Score ────────────────────────────────────────────────
+        st.markdown("### 🎯 Fidelity Score")
+        fidelity = cached["fidelity_score"]
+        rating, color, message = get_fidelity_rating(fidelity)
+
+        f_col1, f_col2, f_col3 = st.columns([1, 2, 1])
+        with f_col2:
             st.markdown(f"""
             <div style='background:linear-gradient(135deg,#1a1f35,#1e2540);
-                        border:1px solid #4fc3f7;
+                        border:2px solid {color};
                         border-radius:12px;
-                        padding:24px 32px;
-                        text-align:center;
-                        margin:16px 0;'>
-                <p style='color:#8892b0; font-size:0.85rem; margin-bottom:8px;'>
-                    Surrogate Equation
-                </p>
-                <p style='color:#4fc3f7; font-size:1.5rem; font-weight:700;
-                          font-family:monospace; letter-spacing:1px;'>
-                    f({ax1}, {ax2}) = {cached['best_equation']}
-                </p>
-                <p style='color:#8892b0; font-size:0.8rem; margin-top:12px;'>
-                    Holding remaining features at anchored values
-                </p>
+                        padding:24px;
+                        text-align:center;'>
+                <div style='font-size:3rem; font-weight:800; color:{color};'>
+                    {fidelity}%
+                </div>
+                <div style='font-size:1.3rem; font-weight:600; color:{color};
+                            margin-top:4px;'>
+                    {rating}
+                </div>
+                <div style='color:#8892b0; font-size:0.9rem; margin-top:8px;'>
+                    {message}
+                </div>
+                <div style='color:#8892b0; font-size:0.85rem; margin-top:8px;'>
+                    MAE between surrogate and model: <strong>{cached['mae']}</strong>
+                </div>
             </div>
             """, unsafe_allow_html=True)
 
-            # ── Fidelity Score ────────────────────────────────────────────────
-            st.markdown("### 🎯 Fidelity Score")
-            fidelity = cached["fidelity_score"]
-            rating, color, message = get_fidelity_rating(fidelity)
+        # ── Fidelity Scale Reference ──────────────────────────────────────
+        st.markdown("<br>", unsafe_allow_html=True)
+        with st.expander("📊 Fidelity Scale Reference", expanded=False):
+            fidelity_scale = pd.DataFrame([
+                {"Score Range": "95% and above", "Rating": "🟢 Excellent",
+                 "Meaning": "Surrogate closely mirrors the model"},
+                {"Score Range": "85% – 94%",     "Rating": "🔵 Good",
+                 "Meaning": "Strong approximation"},
+                {"Score Range": "70% – 84%",     "Rating": "🟡 Fair",
+                 "Meaning": "Captures main trend, misses complexity"},
+                {"Score Range": "50% – 69%",     "Rating": "🟠 Weak",
+                 "Meaning": "Rough approximation — try Balanced mode"},
+                {"Score Range": "Below 50%",     "Rating": "🔴 Unreliable",
+                 "Meaning": "Poor fit — try Deep Search or different features"},
+            ])
+            st.dataframe(fidelity_scale, use_container_width=True, hide_index=True)
 
-            f_col1, f_col2, f_col3 = st.columns([1, 2, 1])
-            with f_col2:
-                st.markdown(f"""
-                <div style='background:linear-gradient(135deg,#1a1f35,#1e2540);
-                            border:2px solid {color};
-                            border-radius:12px;
-                            padding:24px;
-                            text-align:center;'>
-                    <div style='font-size:3rem; font-weight:800; color:{color};'>
-                        {fidelity}%
-                    </div>
-                    <div style='font-size:1.3rem; font-weight:600; color:{color};
-                                margin-top:4px;'>
-                        {rating}
-                    </div>
-                    <div style='color:#8892b0; font-size:0.9rem; margin-top:8px;'>
-                        {message}
-                    </div>
-                    <div style='color:#8892b0; font-size:0.85rem; margin-top:8px;'>
-                        MAE between surrogate and model: <strong>{cached['mae']}</strong>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
+        # ── Equation Complexity Info ──────────────────────────────────────
+        ci = cached["complexity_info"]
+        st.markdown("<br>", unsafe_allow_html=True)
+        ci_col1, ci_col2, ci_col3 = st.columns(3)
+        with ci_col1:
+            st.markdown(f"""
+            <div class='metric-card'>
+                <div class='metric-value'>{ci['complexity']}</div>
+                <div class='metric-label'>Equation Complexity</div>
+            </div>""", unsafe_allow_html=True)
+        with ci_col2:
+            st.markdown(f"""
+            <div class='metric-card'>
+                <div class='metric-value'>{ci['loss']:.4f}</div>
+                <div class='metric-label'>PySR Loss</div>
+            </div>""", unsafe_allow_html=True)
+        with ci_col3:
+            st.markdown(f"""
+            <div class='metric-card'>
+                <div class='metric-value'>{fidelity}%</div>
+                <div class='metric-label'>Fidelity Score</div>
+            </div>""", unsafe_allow_html=True)
 
-            # ── Fidelity Scale Reference ──────────────────────────────────────
-            st.markdown("<br>", unsafe_allow_html=True)
-            with st.expander("📊 Fidelity Scale Reference", expanded=False):
-                fidelity_scale = pd.DataFrame([
-                    {"Score Range": "95% and above", "Rating": "🟢 Excellent",
-                     "Meaning": "Surrogate closely mirrors the model"},
-                    {"Score Range": "85% – 94%",     "Rating": "🔵 Good",
-                     "Meaning": "Strong approximation"},
-                    {"Score Range": "70% – 84%",     "Rating": "🟡 Fair",
-                     "Meaning": "Captures main trend, misses complexity"},
-                    {"Score Range": "50% – 69%",     "Rating": "🟠 Weak",
-                     "Meaning": "Rough approximation — try Balanced mode"},
-                    {"Score Range": "Below 50%",     "Rating": "🔴 Unreliable",
-                     "Meaning": "Poor fit — try Deep Search or different features"},
-                ])
-                st.dataframe(fidelity_scale, use_container_width=True, hide_index=True)
-
-            # ── Equation Complexity Info ──────────────────────────────────────
-            ci = cached["complexity_info"]
-            st.markdown("<br>", unsafe_allow_html=True)
-            ci_col1, ci_col2, ci_col3 = st.columns(3)
-            with ci_col1:
-                st.markdown(f"""
-                <div class='metric-card'>
-                    <div class='metric-value'>{ci['complexity']}</div>
-                    <div class='metric-label'>Equation Complexity</div>
-                </div>""", unsafe_allow_html=True)
-            with ci_col2:
-                st.markdown(f"""
-                <div class='metric-card'>
-                    <div class='metric-value'>{ci['loss']:.4f}</div>
-                    <div class='metric-label'>PySR Loss</div>
-                </div>""", unsafe_allow_html=True)
-            with ci_col3:
-                st.markdown(f"""
-                <div class='metric-card'>
-                    <div class='metric-value'>{fidelity}%</div>
-                    <div class='metric-label'>Fidelity Score</div>
-                </div>""", unsafe_allow_html=True)
-
-            # ── All Discovered Equations Table + Manual Selector ─────────────
-            st.markdown("<br>", unsafe_allow_html=True)
-            with st.expander("📋 All Discovered Equations (PySR Pareto Front)", expanded=False):
-                st.markdown(
-                    "<p style='color:#8892b0; font-size:0.85rem;'>"
-                    "PySR returns a Pareto front — equations at different "
-                    "complexity vs accuracy tradeoffs. The best equation "
-                    "is automatically selected based on your complexity preference. "
-                    "You can also manually select any equation from the table below.</p>",
-                    unsafe_allow_html=True
-                )
-                try:
-                    eq_df = cached["all_equations"][
-                        ["complexity", "loss", "equation"]
-                    ].copy()
-                    eq_df.columns = ["Complexity", "Loss", "Equation"]
-                    st.dataframe(
-                        eq_df,
-                        use_container_width=True,
-                        hide_index=True,
-                        column_config={
-                            "Equation": st.column_config.TextColumn(
-                                "Equation",
-                                width="large"
-                            )
-                        }
-                    )
-
-                    # ── Manual Equation Selection ─────────────────────────────
-                    st.markdown("---")
-                    st.markdown(
-                        "**🎯 Select Equation Manually**",
-                    )
-                    st.markdown(
-                        "<p style='color:#8892b0; font-size:0.85rem;'>"
-                        "Want to use a specific equation from the table above? "
-                        "Select it by complexity level. Higher complexity = "
-                        "more accurate but harder to interpret.</p>",
-                        unsafe_allow_html=True
-                    )
-
-                    complexity_options = eq_df["Complexity"].tolist()
-                    equation_options  = eq_df["Equation"].tolist()
-                    loss_options      = eq_df["Loss"].tolist()
-
-                    # Build display labels for the radio buttons
-                    radio_labels = [
-                        f"Complexity {c}  |  Loss {l:.4f}  →  {e}"
-                        for c, l, e in zip(complexity_options, loss_options, equation_options)
-                    ]
-
-                    # Find the currently active equation's index
-                    current_eq = cached["best_equation"]
-                    try:
-                        current_idx = equation_options.index(current_eq)
-                    except ValueError:
-                        current_idx = len(equation_options) - 1
-
-                    selected_label = st.radio(
-                        "Choose equation:",
-                        options=radio_labels,
-                        index=current_idx,
-                        key="manual_eq_select"
-                    )
-
-                    selected_idx = radio_labels.index(selected_label)
-                    selected_eq  = str(equation_options[selected_idx])
-                    selected_complexity = complexity_options[selected_idx]
-                    selected_loss = loss_options[selected_idx]
-
-                    # Apply button
-                    if st.button(
-                        "✅ Use This Equation",
-                        key="apply_manual_eq",
-                        use_container_width=True
-                    ):
-                        # Format the manually selected equation for Desmos
-                        formatted_eq, desmos_eq = format_equation(
-                            selected_eq, ax1, ax2
-                        )
-                        # Update the cache with manually selected equation
-                        st.session_state.pysr_cache[cache_key]["best_equation"]   = formatted_eq
-                        st.session_state.pysr_cache[cache_key]["desmos_equation"] = desmos_eq
-                        st.session_state.pysr_cache[cache_key]["complexity_info"]["complexity"] = int(selected_complexity)
-                        st.session_state.pysr_cache[cache_key]["complexity_info"]["loss"] = float(selected_loss)
-                        st.session_state.best_equation   = formatted_eq
-                        st.session_state.desmos_equation = desmos_eq
-                        st.success(
-                            f"✅ Equation updated! "
-                            f"Now using complexity {selected_complexity} equation."
-                        )
-                        st.rerun()
-
-                except Exception:
-                    st.info("Equation table not available for this run.")
-
-            # ── Desmos Equation Preview ───────────────────────────────────────
-            st.markdown("---")
-            st.markdown("### 🔗 Desmos-Ready Equation")
+        # ── All Discovered Equations Table + Manual Selector ─────────────
+        st.markdown("<br>", unsafe_allow_html=True)
+        with st.expander("📋 All Discovered Equations (PySR Pareto Front)", expanded=False):
             st.markdown(
-                "<p style='color:#8892b0; font-size:0.9rem;'>"
-                "This is the equation formatted for Desmos visualization "
-                "(variables renamed to x and y):</p>",
+                "<p style='color:#8892b0; font-size:0.85rem;'>"
+                "PySR returns a Pareto front — equations at different "
+                "complexity vs accuracy tradeoffs. The best equation "
+                "is automatically selected based on your complexity preference. "
+                "You can also manually select any equation from the table below.</p>",
                 unsafe_allow_html=True
             )
-            st.code(f"f(x, y) = {cached['desmos_equation']}", language="latex")
-            st.caption(
-                f"Where x = {ax1} and y = {ax2}"
-            )
+            try:
+                eq_df = cached["all_equations"][
+                    ["complexity", "loss", "equation"]
+                ].copy()
+                eq_df.columns = ["Complexity", "Loss", "Equation"]
+                st.dataframe(eq_df, use_container_width=True, hide_index=True)
 
-            # ── Info message ──────────────────────────────────────────────────
-            st.markdown("<br>", unsafe_allow_html=True)
-            st.markdown("""
-            <div class='custom-info'>
-                💡 <strong>Want a different equation?</strong>
-                Change the compute mode or complexity preference above
-                and click "Discover Equation" again for a fresh search.
-                Or open the Pareto Front table above to manually pick
-                any equation by complexity level.
-            </div>
-            """, unsafe_allow_html=True)
+                # ── Manual Equation Selection ─────────────────────────────
+                st.markdown("---")
+                st.markdown(
+                    "**🎯 Select Equation Manually**",
+                )
+                st.markdown(
+                    "<p style='color:#8892b0; font-size:0.85rem;'>"
+                    "Want to use a specific equation from the table above? "
+                    "Select it by complexity level. Higher complexity = "
+                    "more accurate but harder to interpret.</p>",
+                    unsafe_allow_html=True
+                )
 
-            # ── Proceed Button ────────────────────────────────────────────────
-            st.markdown("---")
-            col_p1, col_p2, col_p3 = st.columns([1, 2, 1])
-            with col_p2:
+                complexity_options = eq_df["Complexity"].tolist()
+                equation_options  = eq_df["Equation"].tolist()
+                loss_options      = eq_df["Loss"].tolist()
+
+                # Build display labels for the radio buttons
+                radio_labels = [
+                    f"Complexity {c}  |  Loss {l:.4f}  →  {e[:60]}{'...' if len(str(e)) > 60 else ''}"
+                    for c, l, e in zip(complexity_options, loss_options, equation_options)
+                ]
+
+                # Find the currently active equation's index
+                current_eq = cached["best_equation"]
+                try:
+                    current_idx = equation_options.index(current_eq)
+                except ValueError:
+                    current_idx = len(equation_options) - 1
+
+                selected_label = st.radio(
+                    "Choose equation:",
+                    options=radio_labels,
+                    index=current_idx,
+                    key="manual_eq_select"
+                )
+
+                selected_idx = radio_labels.index(selected_label)
+                selected_eq  = str(equation_options[selected_idx])
+                selected_complexity = complexity_options[selected_idx]
+                selected_loss = loss_options[selected_idx]
+
+                # Apply button
                 if st.button(
-                    "🎨 Proceed to Desmos Visualization →",
-                    use_container_width=True,
-                    type="primary",
-                    key="proceed_desmos_btn"
+                    "✅ Use This Equation",
+                    key="apply_manual_eq",
+                    use_container_width=True
                 ):
-                    st.session_state.symbolic_complete = True
-                    st.session_state.show_desmos = True
-                    st.success("✅ Equation locked in! Proceeding to Desmos Visualization.")
+                    # Format the manually selected equation for Desmos
+                    formatted_eq, desmos_eq = format_equation(
+                        selected_eq, ax1, ax2
+                    )
+                    # Update the cache with manually selected equation
+                    st.session_state.pysr_cache[cache_key]["best_equation"]   = formatted_eq
+                    st.session_state.pysr_cache[cache_key]["desmos_equation"] = desmos_eq
+                    st.session_state.pysr_cache[cache_key]["complexity_info"]["complexity"] = int(selected_complexity)
+                    st.session_state.pysr_cache[cache_key]["complexity_info"]["loss"] = float(selected_loss)
+                    st.session_state.best_equation   = formatted_eq
+                    st.session_state.desmos_equation = desmos_eq
+                    st.success(
+                        f"✅ Equation updated! "
+                        f"Now using complexity {selected_complexity} equation."
+                    )
                     st.rerun()
 
-    # =============================================================================
-    # EMPTY STATE — Only shown when no data is loaded at all
-    # =============================================================================
+            except Exception:
+                st.info("Equation table not available for this run.")
 
-    else:
-        if not st.session_state.data_loaded:
-            st.markdown("""
-            <div style='text-align:center; padding: 60px 20px; color:#8892b0;'>
-                <div style='font-size:4rem;'>📂</div>
-                <h3 style='color:#4fc3f7;'>Upload a dataset or choose a demo to get started</h3>
-                <p>Supported format: CSV files</p>
+        # ── Desmos Equation Preview ───────────────────────────────────────
+        st.markdown("---")
+        st.markdown("### 🔗 Desmos-Ready Equation")
+        st.markdown(
+            "<p style='color:#8892b0; font-size:0.9rem;'>"
+            "This is the equation formatted for Desmos visualization "
+            "(variables renamed to x and y):</p>",
+            unsafe_allow_html=True
+        )
+        st.code(f"f(x, y) = {cached['desmos_equation']}", language="latex")
+        st.caption(
+            f"Where x = {ax1} and y = {ax2}"
+        )
+
+        # ── Info message ──────────────────────────────────────────────────
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("""
+        <div class='custom-info'>
+            💡 <strong>Want a different equation?</strong>
+            Change the compute mode or complexity preference above
+            and click "Discover Equation" again for a fresh search.
+            Or open the Pareto Front table above to manually pick
+            any equation by complexity level.
+        </div>
+        """, unsafe_allow_html=True)
+
+        # ── Proceed Button ────────────────────────────────────────────────
+        st.markdown("---")
+        col_p1, col_p2, col_p3 = st.columns([1, 2, 1])
+        with col_p2:
+            if st.button(
+                "🎨 Proceed to Desmos Visualization →",
+                use_container_width=True,
+                type="primary",
+                key="proceed_desmos_btn"
+            ):
+                st.session_state.symbolic_complete = True
+                st.session_state.show_desmos = True
+                st.success("✅ Equation locked in! Proceeding to Desmos Visualization.")
+                st.rerun()
+
+# =============================================================================
+# PHASE 5 — DESMOS VISUALIZATION
+# =============================================================================
+
+if (
+    st.session_state.symbolic_complete
+    and st.session_state.best_equation is not None
+    and st.session_state.desmos_equation is not None
+    and st.session_state.get("show_desmos", False)
+):
+    st.markdown("---")
+    st.markdown("""
+    <div class='section-header'>
+        <h2 style='margin:0; color:#e0e0e0;'>🎨 Phase 5 — Interactive Desmos Visualization</h2>
+    </div>
+    """, unsafe_allow_html=True)
+
+    ax1 = st.session_state.axis_feature_1
+    ax2 = st.session_state.axis_feature_2
+
+    st.markdown(
+        f"<p style='color:#8892b0;'>Visualizing the surrogate equation as a live interactive graph. "
+        f"The curve shows how <strong style='color:#4fc3f7;'>{ax1}</strong> "
+        f"affects the predicted value. "
+        f"Drag the <strong style='color:#81c784;'>a</strong> slider inside the graph "
+        f"to instantly explore different values of "
+        f"<strong style='color:#81c784;'>{ax2}</strong> — no recomputation needed.</p>",
+        unsafe_allow_html=True
+    )
+
+    # ── Equation reminder ─────────────────────────────────────────────────────
+    best_eq   = st.session_state.best_equation
+    desmos_eq = st.session_state.desmos_equation
+    fidelity  = st.session_state.fidelity_score
+
+    st.markdown(f"""
+    <div style='background:linear-gradient(135deg,#1a1f35,#1e2540);
+                border:1px solid #4fc3f7; border-radius:10px;
+                padding:16px 24px; margin-bottom:16px; text-align:center;'>
+        <p style='color:#8892b0; font-size:0.8rem; margin-bottom:6px;'>
+            Surrogate Equation Being Visualized
+        </p>
+        <p style='color:#4fc3f7; font-size:1.05rem; font-weight:600;
+                  font-family:monospace; word-break:break-all;'>
+            f({ax1}, {ax2}) = {best_eq}
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Get axis feature bounds ───────────────────────────────────────────────
+    df_clean     = st.session_state.df_clean
+    ax1_min, ax1_max = get_feature_bounds(df_clean, ax1)
+    ax2_min, ax2_max = get_feature_bounds(df_clean, ax2)
+
+    # Current value of axis_feature_2 — from anchored_values or median
+    ax2_current = float(
+        st.session_state.anchored_values.get(
+            ax2,
+            float(df_clean[ax2].median())
+        )
+    )
+
+    # ── Streamlit-native legend (since HTML component is now minimal) ─────────
+    leg1, leg2, leg3, leg4 = st.columns(4)
+    with leg1:
+        st.markdown(
+            "<div style='background:#1a1f35; border:1px solid #2d3154; "
+            "border-radius:8px; padding:8px 14px; text-align:center;'>"
+            "<span style='color:#4fc3f7;'>●</span> "
+            "<span style='color:#8892b0; font-size:0.82rem;'>Surrogate Equation</span>"
+            "</div>", unsafe_allow_html=True
+        )
+    with leg2:
+        st.markdown(
+            f"<div style='background:#1a1f35; border:1px solid #2d3154; "
+            f"border-radius:8px; padding:8px 14px; text-align:center;'>"
+            f"<span style='color:#ff9800;'>●</span> "
+            f"<span style='color:#8892b0; font-size:0.82rem;'>x = <strong style='color:#e0e0e0;'>{ax1}</strong></span>"
+            f"</div>", unsafe_allow_html=True
+        )
+    with leg3:
+        st.markdown(
+            f"<div style='background:#1a1f35; border:1px solid #2d3154; "
+            f"border-radius:8px; padding:8px 14px; text-align:center;'>"
+            f"<span style='color:#81c784;'>●</span> "
+            f"<span style='color:#8892b0; font-size:0.82rem;'>slider a = <strong style='color:#e0e0e0;'>{ax2}</strong></span>"
+            f"</div>", unsafe_allow_html=True
+        )
+    with leg4:
+        st.markdown(
+            f"<div style='background:#1a1f35; border:1px solid #4caf50; "
+            f"border-radius:8px; padding:8px 14px; text-align:center;'>"
+            f"<span style='color:#4caf50; font-size:0.82rem;'>✅ Fidelity: {fidelity}%</span>"
+            f"</div>", unsafe_allow_html=True
+        )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Build and render Desmos component ─────────────────────────────────────
+    desmos_html = build_desmos_html(
+        desmos_equation   = desmos_eq,
+        axis_feature_1    = ax1,
+        axis_feature_2    = ax2,
+        ax2_current_value = ax2_current,
+        ax2_min           = ax2_min,
+        ax2_max           = ax2_max,
+        ax1_min           = ax1_min,
+        ax1_max           = ax1_max,
+        fidelity_score    = fidelity,
+        height            = 500
+    )
+
+    # height=510 gives 500px calculator + 10px iframe buffer
+    components.html(desmos_html, height=510, scrolling=False)
+
+    st.caption(
+        f"x = {ax1}  |  a = {ax2} (current: {round(ax2_current, 2)})  |  "
+        f"y = Predicted Value  —  Drag slider 'a' in the expression panel to explore interactively →"
+    )
+
+    # ── How to use cards ──────────────────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    g1, g2, g3 = st.columns(3)
+    with g1:
+        st.markdown("""
+        <div class='metric-card'>
+            <div style='font-size:1.6rem;'>🖱️</div>
+            <div style='color:#4fc3f7; font-weight:600; margin:8px 0 4px 0;'>
+                Drag Slider 'a'
             </div>
-            """, unsafe_allow_html=True)
+            <div class='metric-label'>
+                In the left expression panel, drag the 'a' slider
+                to change the value of the second feature instantly.
+                The curve updates in real time — no recomputation.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    with g2:
+        st.markdown("""
+        <div class='metric-card'>
+            <div style='font-size:1.6rem;'>🔍</div>
+            <div style='color:#4fc3f7; font-weight:600; margin:8px 0 4px 0;'>
+                Zoom and Pan
+            </div>
+            <div class='metric-label'>
+                Scroll to zoom in or out.
+                Click and drag on the graph area to pan
+                across the mathematical relationship.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    with g3:
+        st.markdown("""
+        <div class='metric-card'>
+            <div style='font-size:1.6rem;'>🔄</div>
+            <div style='color:#4fc3f7; font-weight:600; margin:8px 0 4px 0;'>
+                Recompute Surrogate
+            </div>
+            <div class='metric-label'>
+                To explore different anchor values, go back to
+                Phase 4 sliders, adjust them, then click
+                Discover Equation again for a fresh surrogate.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # ── Fixed feature values reminder ─────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    anchored      = st.session_state.anchored_values
+    encoding_maps = st.session_state.get("encoding_maps", {})
+
+    if anchored:
+        with st.expander("📌 Features Fixed During Equation Discovery", expanded=False):
+            st.markdown(
+                "<p style='color:#8892b0; font-size:0.85rem;'>"
+                "These features were held at fixed values when PySR discovered the equation. "
+                "They appear as numeric constants in the curve. "
+                "To explore different fixed values, go back to Phase 4 sliders "
+                "and rerun equation discovery.</p>",
+                unsafe_allow_html=True
+            )
+            anchor_rows = []
+            for feat, val in anchored.items():
+                if feat in encoding_maps:
+                    enc_label   = encoding_maps[feat].get(int(val), str(val))
+                    display_val = f"{val}  ({enc_label})"
+                else:
+                    display_val = str(val)
+                anchor_rows.append({"Feature": feat, "Fixed At": display_val})
+
+            st.dataframe(
+                pd.DataFrame(anchor_rows),
+                use_container_width=True,
+                hide_index=True
+            )
+
+    # ── Scientific interpretation note ────────────────────────────────────────
+    st.markdown(f"""
+    <div class='custom-info'>
+        🔬 <strong>How to read this graph:</strong>
+        The curve shows how <strong>{ax1}</strong> (x-axis) affects
+        the predicted value (y-axis) while <strong>{ax2}</strong>
+        is held at the slider value <strong>a</strong>.
+        <br><br>
+        A <em>straight line</em> = linear (proportional) relationship. &nbsp;
+        A <em>curve</em> = diminishing or accelerating returns. &nbsp;
+        An <em>S-shape</em> = threshold effect. &nbsp;
+        <em>Oscillation</em> = periodic mathematical influence.
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Proceed to Gemini AI Explanation ──────────────────────────────────────
+    st.markdown("---")
+    col_d1, col_d2, col_d3 = st.columns([1, 2, 1])
+    with col_d2:
+        if st.button(
+            "🤖 Proceed to AI Explanation →",
+            use_container_width=True,
+            type="primary",
+            key="proceed_gemini_btn"
+        ):
+            st.session_state.desmos_complete = True
+            st.session_state.show_gemini    = True
+            st.rerun()
+
+# =============================================================================
+# EMPTY STATE — No data loaded yet
+# =============================================================================
+
+else:
+    if not st.session_state.data_loaded:
+        st.markdown("""
+        <div style='text-align:center; padding: 60px 20px; color:#8892b0;'>
+            <div style='font-size:4rem;'>📂</div>
+            <h3 style='color:#4fc3f7;'>Upload a dataset or choose a demo to get started</h3>
+            <p>Supported format: CSV files</p>
+        </div>
+        """, unsafe_allow_html=True)
