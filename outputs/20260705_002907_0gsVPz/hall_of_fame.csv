@@ -1,0 +1,5 @@
+Complexity,Loss,Equation
+1,1.7191148e10,"287625.22"
+3,7.9212435e6,"SquareFootage * 127.77432"
+7,1.819362e6,"(NumBedrooms + 109.089874) * (SquareFootage / 0.88365865)"
+10,0.0004197693,"((SquareFootage + (SquareFootage + -107.024666)) * 64.66508) + abs(SquareFootage)"

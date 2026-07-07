@@ -1,0 +1,4 @@
+Complexity,Loss,Equation
+1,45.40862,"15.1033"
+3,6.82308,"Present_Price ^ 0.712642"
+8,3.8289523,"exp(-7.373692 / (-2.1377537 - (21.394587 / Present_Price)))"

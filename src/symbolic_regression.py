@@ -352,10 +352,15 @@ def format_equation(equation_str, axis_feature_1, axis_feature_2):
     formatted = formatted.replace("X1", axis_feature_2)
 
     # Desmos version — replace variable names with x and y
+    import re
     desmos_ready = equation_str
-    desmos_ready = desmos_ready.replace("X0", "x")
-    desmos_ready = desmos_ready.replace("X1", "y")
+    # Use exact string replacement (case-sensitive, whole occurrences)
+    desmos_ready = desmos_ready.replace(str(axis_feature_1), "x")
+    desmos_ready = desmos_ready.replace(str(axis_feature_2), "y")
     desmos_ready = desmos_ready.replace("**", "^")
+    # Remove any spaces around operators for Desmos compatibility
+    desmos_ready = desmos_ready.replace(" + -", " - ")
+    desmos_ready = desmos_ready.replace(" - -", " + ")
 
     return formatted, desmos_ready
 

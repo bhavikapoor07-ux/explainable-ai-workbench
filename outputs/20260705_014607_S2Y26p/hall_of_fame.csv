@@ -1,0 +1,8 @@
+Complexity,Loss,Equation
+1,1.7191148e10,"277784.75"
+3,4.646327e7,"SquareFootage * 124.14007"
+5,4.646326e7,"(SquareFootage / 3017.8633) * 374636.75"
+7,3.710003e7,"log(SquareFootage) * (abs(SquareFootage) * 15.572462)"
+8,9.800937e6,"log(SquareFootage) * ((SquareFootage + 120.83168) * 14.9280815)"
+9,0.00039916992,"((SquareFootage + (SquareFootage + SquareFootage)) * 43.443386) + -16761.45"
+13,0.00020669555,"(((SquareFootage + (SquareFootage + -488.7714)) + (SquareFootage + SquareFootage)) * 32.58254) + -836.03876"

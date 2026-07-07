@@ -1,0 +1,11 @@
+Complexity,Loss,Equation
+1,45.40862,"15.103589"
+3,6.8230796,"Present_Price ^ 0.7126443"
+4,6.111232,"sqrt(Present_Price * 5.7557654)"
+5,5.6909895,"(Present_Price ^ 0.5740242) / 0.56201077"
+6,5.106004,"(sqrt(Present_Price) + -1.0765845) * 2.8194194"
+7,3.9114747,"exp((-6.2380214 / sqrt(Present_Price)) + 3.7593687)"
+9,3.2392685,"(cos(sqrt(Present_Price)) + (Present_Price ^ 0.55290824)) / 0.5097208"
+10,3.1158416,"(cos(sqrt(Present_Price)) + sqrt(Present_Price ^ 1.1715152)) / 0.58055127"
+12,2.6074805,"((sqrt(Present_Price ^ 1.0832438) + cos(sqrt(Present_Price))) + -1.0438113) / 0.42572635"
+14,2.372239,"((sqrt(Present_Price ^ 1.0871013) + -1.1457705) + cos(sqrt(Present_Price) + 0.32504463)) / 0.41858837"

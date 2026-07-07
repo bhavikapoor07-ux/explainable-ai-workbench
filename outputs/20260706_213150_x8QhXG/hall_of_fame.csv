@@ -1,0 +1,5 @@
+Complexity,Loss,Equation
+1,1.7191148e10,"277784.75"
+3,4.6463244e7,"SquareFootage * 124.139656"
+5,0.00023376464,"(128.60783 - SquareFootage) * -130.33017"
+13,0.00020669555,"(((SquareFootage + (SquareFootage + -488.7714)) + (SquareFootage + SquareFootage)) * 32.58254) + -836.03876"

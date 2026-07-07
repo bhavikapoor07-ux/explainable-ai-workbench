@@ -1,0 +1,7 @@
+Complexity,Loss,Equation
+1,45.40862,"15.103587"
+3,6.8230796,"Present_Price ^ 0.71264327"
+4,6.1112313,"sqrt(Present_Price) * 2.39911"
+5,4.892447,"Present_Price ^ (Present_Price ^ -0.08105846)"
+10,3.3872294,"(cos(sqrt(Present_Price)) + -3.0600803) - (sqrt(Present_Price) / -0.35427815)"
+11,3.3851032,"abs((cos(sqrt(Present_Price)) + -3.0600803) - (sqrt(Present_Price) / -0.35427815))"
