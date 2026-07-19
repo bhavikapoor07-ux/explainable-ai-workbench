@@ -283,3 +283,61 @@ def build_prediction_input(
             X_grid[:, i] = anchored_values.get(feature, 0.0)
 
     return X_grid, grid_1, grid_2
+
+def get_desmos_slider_config(df_clean, feature, encoding_maps=None):
+    """
+    Returns slider configuration for a single feature for Desmos.
+
+    Parameters:
+        df_clean      : pd.DataFrame
+        feature       : str — feature name
+        encoding_maps : dict — {col: {0:'CNG', 1:'Diesel'}} or None
+
+    Returns:
+        config : dict with keys:
+            min         : float — slider minimum
+            max         : float — slider maximum
+            step        : str   — "" for continuous, "1" for integer/categorical
+            default     : float — initial value (median)
+            is_integer  : bool  — True if values are whole numbers
+            is_categorical : bool — True if encoded categorical
+            category_map   : dict or None — {0:'CNG', 1:'Diesel'} if categorical
+    """
+    col = df_clean[feature].dropna()
+
+    min_val = float(col.min())
+    max_val = float(col.max())
+    median_val = float(col.median())
+
+    # Check if encoded categorical
+    is_categorical = False
+    category_map = None
+    if encoding_maps and feature in encoding_maps:
+        is_categorical = True
+        category_map = encoding_maps[feature]
+        return {
+            "min": min_val,
+            "max": max_val,
+            "step": "1",
+            "default": round(median_val),
+            "is_integer": True,
+            "is_categorical": True,
+            "category_map": category_map
+        }
+
+    # Check if integer-like (Age, Year, Count etc.)
+    is_integer = (
+        col.dtype in [int, "int32", "int64"] or
+        (col.dtype in [float, "float32", "float64"] and
+         (col == col.round(0)).all())
+    )
+
+    return {
+        "min": min_val,
+        "max": max_val,
+        "step": "1" if is_integer else "",
+        "default": int(round(median_val)) if is_integer else round(median_val, 4),
+        "is_integer": is_integer,
+        "is_categorical": False,
+        "category_map": None
+    }

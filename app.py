@@ -5,6 +5,7 @@
 # =============================================================================
 
 import time
+import threading
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
@@ -35,6 +36,7 @@ from src.feature_importance import (
 from src.symbolic_regression import (
     COMPUTE_MODES,
     COMPLEXITY_MODES,
+    get_variable_mapping,
     prepare_pysr_data,
     compute_fidelity,
     format_equation,
@@ -51,6 +53,13 @@ from src.symbolic_regression import (
 from src.desmos_visualizer import (
     build_desmos_html,
     get_feature_bounds,
+)
+from src.feature_importance import (
+    compute_permutation_importance,
+    select_top_features,
+    get_slider_anchors,
+    prepare_anchored_values,
+    get_desmos_slider_config,
 )
 
 # =============================================================================
@@ -244,6 +253,14 @@ if "pysr_pending_X" not in st.session_state:
     st.session_state.pysr_pending_X = None    # X stored while thread runs
 if "pysr_pending_y" not in st.session_state:
     st.session_state.pysr_pending_y = None    # y stored while thread runs
+if "x_feature" not in st.session_state:
+    st.session_state.x_feature = None         # single x-axis feature
+if "slider_features" not in st.session_state:
+    st.session_state.slider_features = []     # all other top features
+if "var_to_feature" not in st.session_state:
+    st.session_state.var_to_feature = {}      # {"x":"Present_Price","a":"Year"}
+if "slider_configs" not in st.session_state:
+    st.session_state.slider_configs = {}      # Desmos slider configs per var
 
 # =============================================================================
 # JULIA PRE-WARMING — Runs silently on first app load
@@ -1020,112 +1037,83 @@ if (
     # ── Axis Feature Selection ────────────────────────────────────────────────
     st.markdown("---")
     st.markdown("### 🎯 Select Visualization Axes")
-    st.markdown(
-        "<p style='color:#8892b0;'>Choose <strong>2 features</strong> from the top selected features "
-        "to use as the X and Y axes in the Desmos visualization. "
-        "Remaining features will be anchored at their median values with interactive sliders.</p>",
-        unsafe_allow_html=True
-    )
 
     if len(top_features) < 2:
         st.error("❌ Not enough features selected. Lower the coverage threshold to include more features.")
     else:
-        col_ax1, col_ax2 = st.columns(2)
+        st.markdown(
+            "<p style='color:#8892b0; font-size:0.9rem;'>"
+            "Select the <strong>primary feature</strong> for the Desmos x-axis. "
+            "All other top features automatically become interactive Desmos sliders.</p>",
+            unsafe_allow_html=True
+        )
 
-        with col_ax1:
-            axis_1 = st.selectbox(
-                "📐 X-Axis Feature",
-                options=top_features,
-                index=0,
-                key="axis1_select"
-            )
+        x_feature = st.selectbox(
+            "📐 X-Axis Feature (horizontal axis in Desmos graph)",
+            options=top_features,
+            index=0,
+            key="x_feature_select"
+        )
 
-        with col_ax2:
-            axis_2_options = [f for f in top_features if f != axis_1]
-            axis_2 = st.selectbox(
-                "📐 Y-Axis Feature",
-                options=axis_2_options,
-                index=0,
-                key="axis2_select"
-            )
+        slider_features = [f for f in top_features if f != x_feature]
 
-        st.session_state.axis_feature_1 = axis_1
-        st.session_state.axis_feature_2 = axis_2
+        st.session_state.x_feature = x_feature
+        st.session_state.axis_feature_1 = x_feature
+        st.session_state.axis_feature_2 = slider_features[0] if slider_features else x_feature
+        st.session_state.slider_features = slider_features
 
-        # ── Remaining Features Sliders ────────────────────────────────────────
-        remaining_features = [
-            f for f in st.session_state.data_splits["feature_names"]
-            if f != axis_1 and f != axis_2
-        ]
-
-        # Get encoding maps stored during data loading
-        encoding_maps = st.session_state.encoding_maps
-        df_clean = st.session_state.df_clean
-
-        if remaining_features:
-            st.markdown("---")
-            st.markdown("### 🎛️ Anchor Remaining Features")
+        if slider_features:
             st.markdown(
-                "<p style='color:#8892b0;'>These features are held at fixed values while "
-                "the graph visualizes the relationship between your two selected axes. "
-                "Adjust them to explore different conditions.</p>",
+                f"<div class='custom-info'>🎛️ <strong>Auto-assigned Desmos sliders:</strong> "
+                f"{', '.join(slider_features)}</div>",
                 unsafe_allow_html=True
             )
 
+        # ── Remaining Features Sliders ────────────────────────────────────────
+            # ── Non-top features anchored at median (not interactive in Desmos) ───
+            non_top_features = [
+                f for f in st.session_state.data_splits["feature_names"]
+                if f not in top_features
+            ]
+
             anchored_values = {}
-            cols_per_row = 3
-            for i in range(0, len(remaining_features), cols_per_row):
-                row_features = remaining_features[i:i + cols_per_row]
-                cols = st.columns(len(row_features))
+            if non_top_features:
+                st.markdown("---")
+                st.markdown("### 📌 Non-Top Features — Fixed At Median")
+                st.markdown(
+                    "<p style='color:#8892b0; font-size:0.85rem;'>"
+                    "These features did not make the top selection threshold. "
+                    "They are fixed at their median values during equation discovery.</p>",
+                    unsafe_allow_html=True
+                )
+                anchor_rows = []
+                for feat in non_top_features:
+                    median_val = float(st.session_state.df_clean[feat].median())
+                    anchored_values[feat] = median_val
+                    enc_maps = st.session_state.get("encoding_maps", {})
+                    if feat in enc_maps:
+                        label = enc_maps[feat].get(int(median_val), str(median_val))
+                        display = f"{median_val} ({label})"
+                    else:
+                        display = str(round(median_val, 4))
+                    anchor_rows.append({"Feature": feat, "Fixed At": display})
 
-                for col, feature in zip(cols, row_features):
-                    with col:
-                        if feature in encoding_maps:
-                            # ── Encoded categorical feature ──────────────────
-                            enc_map = encoding_maps[feature]
-                            # options as integers: [0, 1, 2]
-                            options = sorted(enc_map.keys())
-                            # median index as default
-                            default_idx = len(options) // 2
-
-                            selected_val = st.select_slider(
-                                label=f"**{feature}**",
-                                options=options,
-                                value=options[default_idx],
-                                format_func=lambda v, m=enc_map: f"{v}  ({m[v]})",
-                                key=f"slider_{feature}"
-                            )
-
-                        else:
-                            # ── Continuous numeric feature ───────────────────
-                            anchors, anchor_labels, anchor_values = get_slider_anchors(
-                                df_clean,
-                                feature,
-                                st.session_state.target_column
-                            )
-                            default_idx = (
-                                anchor_labels.index("Median")
-                                if "Median" in anchor_labels
-                                else len(anchor_labels) // 2
-                            )
-                            selected_val = st.select_slider(
-                                label=f"**{feature}**",
-                                options=anchor_values,
-                                value=anchor_values[default_idx],
-                                format_func=lambda v, labels=anchor_labels, values=anchor_values: (
-                                    f"{labels[values.index(v)]}  ({v})"
-                                ),
-                                key=f"slider_{feature}"
-                            )
-
-                        anchored_values[feature] = selected_val
+                if anchor_rows:
+                    st.dataframe(
+                        pd.DataFrame(anchor_rows),
+                        use_container_width=True,
+                        hide_index=True
+                    )
 
             st.session_state.anchored_values = anchored_values
+
+
 
             # Show current anchored values summary
             with st.expander("📌 Current Anchor Values Summary", expanded=False):
                 anchor_rows = []
                 for k, v in anchored_values.items():
+                    encoding_maps = st.session_state.get("encoding_maps", {})
                     if k in encoding_maps:
                         display_val = f"{v}  ({encoding_maps[k][v]})"
                     else:
@@ -1150,13 +1138,13 @@ if (
                 st.session_state.show_symbolic = True
                 st.success(
                     f"✅ Features locked in! "
-                    f"X-Axis: **{axis_1}** | Y-Axis: **{axis_2}**"
+                    f"X-Axis: **{x_feature}** | "
+                    f"Sliders: **{', '.join(slider_features)}**"
                 )
                 st.rerun()
 
         # Mark importance as complete as soon as axes are selected
-        # (not just when proceed is clicked)
-        if axis_1 and axis_2:
+        if x_feature:
             st.session_state.importance_complete = True
 
 # =============================================================================
@@ -1182,9 +1170,7 @@ if (
     st.markdown(
         f"<p style='color:#8892b0;'>Discovering a mathematical equation that approximates "
         f"<strong style='color:#4fc3f7;'>{st.session_state.selected_model_name}</strong>'s "
-        f"predictions using features "
-        f"<strong style='color:#4fc3f7;'>{ax1}</strong> and "
-        f"<strong style='color:#4fc3f7;'>{ax2}</strong>.</p>",
+        f"predictions using selected features.</p>",
         unsafe_allow_html=True
     )
 
@@ -1268,38 +1254,43 @@ if (
             del st.session_state.pysr_cache[cache_key]
         clear_thread(cache_key)
 
-        # Prepare training data (fast, no Julia involved)
+        x_feat = st.session_state.x_feature
+        sl_feats = st.session_state.slider_features
+
         with st.spinner("📊 Preparing training data from model predictions..."):
             X_pysr, y_pysr = prepare_pysr_data(
-                df_clean       = st.session_state.df_clean,
-                target_column  = st.session_state.target_column,
-                model          = st.session_state.trained_models[
-                                     st.session_state.selected_model_name],
-                feature_names  = st.session_state.data_splits["feature_names"],
-                axis_feature_1 = ax1,
-                axis_feature_2 = ax2,
-                anchored_values= st.session_state.anchored_values,
-                problem_type   = st.session_state.problem_type
+                df_clean=st.session_state.df_clean,
+                target_column=st.session_state.target_column,
+                model=st.session_state.trained_models[
+                        st.session_state.selected_model_name],
+                feature_names=st.session_state.data_splits["feature_names"],
+                x_feature=x_feat,
+                slider_features=sl_feats,
+                anchored_values=st.session_state.anchored_values,
+                problem_type=st.session_state.problem_type
             )
 
-        # Persist X and y so the polling loop can compute fidelity when done
-        st.session_state.pysr_pending_X = X_pysr
-        st.session_state.pysr_pending_y = y_pysr
+            var_to_feature, _ = get_variable_mapping(x_feat, sl_feats)
+            st.session_state.var_to_feature = var_to_feature
 
-        # Launch PySR in a daemon background thread
-        start_pysr_thread(X_pysr, y_pysr, compute_mode, complexity_mode, cache_key)
-        st.session_state.pysr_waiting_for = cache_key
-        st.rerun()
+            # Persist X and y so the polling loop can compute fidelity when done
+            st.session_state.pysr_pending_X = X_pysr
+            st.session_state.pysr_pending_y = y_pysr
+
+            # Launch PySR in a daemon background thread
+            start_pysr_thread(X_pysr, y_pysr, compute_mode, complexity_mode, cache_key)
+            st.session_state.pysr_waiting_for = cache_key
+            st.rerun()
 
     # ── STEP B: Thread is running → show live progress, poll every 3s ─────────
-    waiting_for    = st.session_state.get("pysr_waiting_for")
-    thread_status  = get_thread_status(cache_key)
+    waiting_for = st.session_state.get("pysr_waiting_for")
+    thread_status = get_thread_status(cache_key)
 
     if waiting_for == cache_key and thread_status in ["starting", "running"]:
-        elapsed   = get_elapsed_seconds(cache_key)
-        timeout   = COMPUTE_MODES[compute_mode]["timeout_in_seconds"]
+        elapsed = get_elapsed_seconds(cache_key)
+        timeout = COMPUTE_MODES[compute_mode]["timeout_in_seconds"]
         remaining = max(0, timeout - elapsed)
-        progress  = min(100, int(elapsed / timeout * 100))
+        progress = min(100, int(elapsed / timeout * 100))
 
         # Phase-specific message based on elapsed time
         if elapsed < 15:
@@ -1355,7 +1346,7 @@ if (
                 "Do not close or refresh this tab. "
                 "This page updates automatically every 3 seconds."
             )
-            time.sleep(3)   # 3-second poll interval
+            time.sleep(3)  # 3-second poll interval
 
         st.rerun()
 
@@ -1370,8 +1361,10 @@ if (
             fidelity, y_surrogate, mae = compute_fidelity(
                 raw_model, None, X_pysr, y_pysr
             )
-            formatted_eq, desmos_eq = format_equation(raw_eq, ax1, ax2)
-            complexity_info         = get_equation_complexity(raw_model)
+
+            var_to_feature = st.session_state.var_to_feature
+            formatted_eq, desmos_eq = format_equation(raw_model, var_to_feature)
+            complexity_info = get_equation_complexity(raw_model)
 
             # Store everything in the per-pair cache
             st.session_state.pysr_cache[cache_key] = {
@@ -1580,9 +1573,37 @@ if (
                     use_container_width=True
                 ):
                     # Format the manually selected equation for Desmos
-                    formatted_eq, desmos_eq = format_equation(
-                        selected_eq, ax1, ax2
-                    )
+                    var_to_feature = st.session_state.var_to_feature
+                    temp_model = cached["pysr_model"]
+                    # For manual selection, rebuild sympy from the selected equation string
+                    # by temporarily setting the best equation index
+                    import sympy as sp
+
+                    try:
+                        # Find the row in equations_ matching selected equation
+                        all_eqs = cached["all_equations"]
+                        eq_match = all_eqs[all_eqs["equation"].astype(str) == str(selected_eq)]
+                        if len(eq_match) > 0:
+                            idx = eq_match.index[0]
+                            sympy_expr = temp_model.sympy(index=idx)
+                            desmos_eq = sp.latex(sympy_expr).replace(r'\log', r'\ln')
+                            formatted_eq = str(sympy_expr)
+                            import re
+
+                            for var_name, feat_name in sorted(
+                                    var_to_feature.items(), key=lambda kv: -len(kv[0])
+                            ):
+                                formatted_eq = re.sub(
+                                    r'\b' + re.escape(var_name) + r'\b',
+                                    lambda m, f=feat_name: f,
+                                    formatted_eq
+                                )
+                        else:
+                            formatted_eq = str(selected_eq)
+                            desmos_eq = str(selected_eq)
+                    except Exception:
+                        formatted_eq = str(selected_eq)
+                        desmos_eq = str(selected_eq)
                     # Update the cache with manually selected equation
                     st.session_state.pysr_cache[cache_key]["best_equation"]   = formatted_eq
                     st.session_state.pysr_cache[cache_key]["desmos_equation"] = desmos_eq
@@ -1596,21 +1617,20 @@ if (
                     )
                     st.rerun()
 
-            except Exception:
-                st.info("Equation table not available for this run.")
+            except Exception as e:
+                st.info(f"Equation table not available: {e}")
 
         # ── Desmos Equation Preview ───────────────────────────────────────
         st.markdown("---")
         st.markdown("### 🔗 Desmos-Ready Equation")
         st.markdown(
             "<p style='color:#8892b0; font-size:0.9rem;'>"
-            "This is the equation formatted for Desmos visualization "
-            "(variables renamed to x and y):</p>",
+            "This is the equation formatted for Desmos visualization:</p>",
             unsafe_allow_html=True
         )
         st.code(f"f(x, y) = {cached['desmos_equation']}", language="latex")
         st.caption(
-            f"Where x = {ax1} and y = {ax2}"
+            f"Where x = {ax1} and y = Predicted Value"
         )
 
         # ── Info message ──────────────────────────────────────────────────
@@ -1661,12 +1681,7 @@ if (
     ax2 = st.session_state.axis_feature_2
 
     st.markdown(
-        f"<p style='color:#8892b0;'>Visualizing the surrogate equation as a live interactive graph. "
-        f"The curve shows how <strong style='color:#4fc3f7;'>{ax1}</strong> "
-        f"affects the predicted value. "
-        f"Drag the <strong style='color:#81c784;'>a</strong> slider inside the graph "
-        f"to instantly explore different values of "
-        f"<strong style='color:#81c784;'>{ax2}</strong> — no recomputation needed.</p>",
+        f"<p style='color:#8892b0;'>Visualizing the surrogate equation as a live interactive graph.</p>",
         unsafe_allow_html=True
     )
 
@@ -1703,7 +1718,7 @@ if (
     )
 
     # ── Streamlit-native legend (since HTML component is now minimal) ─────────
-    leg1, leg2, leg3, leg4 = st.columns(4)
+    leg1, leg2 = st.columns(2)
     with leg1:
         st.markdown(
             "<div style='background:#1a1f35; border:1px solid #2d3154; "
@@ -1712,23 +1727,8 @@ if (
             "<span style='color:#8892b0; font-size:0.82rem;'>Surrogate Equation</span>"
             "</div>", unsafe_allow_html=True
         )
+
     with leg2:
-        st.markdown(
-            f"<div style='background:#1a1f35; border:1px solid #2d3154; "
-            f"border-radius:8px; padding:8px 14px; text-align:center;'>"
-            f"<span style='color:#ff9800;'>●</span> "
-            f"<span style='color:#8892b0; font-size:0.82rem;'>x = <strong style='color:#e0e0e0;'>{ax1}</strong></span>"
-            f"</div>", unsafe_allow_html=True
-        )
-    with leg3:
-        st.markdown(
-            f"<div style='background:#1a1f35; border:1px solid #2d3154; "
-            f"border-radius:8px; padding:8px 14px; text-align:center;'>"
-            f"<span style='color:#81c784;'>●</span> "
-            f"<span style='color:#8892b0; font-size:0.82rem;'>slider a = <strong style='color:#e0e0e0;'>{ax2}</strong></span>"
-            f"</div>", unsafe_allow_html=True
-        )
-    with leg4:
         st.markdown(
             f"<div style='background:#1a1f35; border:1px solid #4caf50; "
             f"border-radius:8px; padding:8px 14px; text-align:center;'>"
@@ -1739,25 +1739,35 @@ if (
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ── Build and render Desmos component ─────────────────────────────────────
+    # Build slider configs for all top features except x
+    var_to_feature=st.session_state.var_to_feature
+    slider_features = st.session_state.slider_features
+    encoding_maps = st.session_state.get("encoding_maps", {})
+    df_clean = st.session_state.df_clean
+
+    slider_configs = {}
+    for var_name, feat_name in var_to_feature.items():
+        if var_name == "x":
+            continue
+        cfg = get_desmos_slider_config(df_clean, feat_name, encoding_maps)
+        slider_configs[var_name] = cfg
+
+    st.session_state.slider_configs = slider_configs
+
     desmos_html = build_desmos_html(
-        desmos_equation   = desmos_eq,
-        axis_feature_1    = ax1,
-        axis_feature_2    = ax2,
-        ax2_current_value = ax2_current,
-        ax2_min           = ax2_min,
-        ax2_max           = ax2_max,
-        ax1_min           = ax1_min,
-        ax1_max           = ax1_max,
-        fidelity_score    = fidelity,
-        height            = 500
+        desmos_latex=desmos_eq,
+        x_feature=ax1,
+        slider_configs=slider_configs,
+        var_to_feature=var_to_feature,
+        fidelity_score=fidelity,
+        height=500
     )
 
     # height=510 gives 500px calculator + 10px iframe buffer
     components.html(desmos_html, height=510, scrolling=False)
 
     st.caption(
-        f"x = {ax1}  |  a = {ax2} (current: {round(ax2_current, 2)})  |  "
-        f"y = Predicted Value  —  Drag slider 'a' in the expression panel to explore interactively →"
+        f"Drag sliders in the expression panel to explore interactively →"
     )
 
     # ── How to use cards ──────────────────────────────────────────────────────
@@ -1768,11 +1778,11 @@ if (
         <div class='metric-card'>
             <div style='font-size:1.6rem;'>🖱️</div>
             <div style='color:#4fc3f7; font-weight:600; margin:8px 0 4px 0;'>
-                Drag Slider 'a'
+                Drag Sliders
             </div>
             <div class='metric-label'>
-                In the left expression panel, drag the 'a' slider
-                to change the value of the second feature instantly.
+                In the left expression panel, drag the sliders
+                to change the value of the features instantly.
                 The curve updates in real time — no recomputation.
             </div>
         </div>
@@ -1837,12 +1847,16 @@ if (
             )
 
     # ── Scientific interpretation note ────────────────────────────────────────
-    st.markdown(f"""
-    <div class='custom-info'>
-        🔬 <strong>How to read this graph:</strong>
-        The curve shows how <strong>{ax1}</strong> (x-axis) affects
-        the predicted value (y-axis) while <strong>{ax2}</strong>
-        is held at the slider value <strong>a</strong>.
+        slider_names = ", ".join(
+            [f"<strong>{st.session_state.var_to_feature.get(v, v)}</strong> (slider {v})"
+             for v in slider_configs.keys()]
+        )
+        st.markdown(f"""
+            <div class='custom-info'>
+                🔬 <strong>How to read this graph:</strong>
+                The curve shows how <strong>{ax1}</strong> (x-axis) affects
+                the predicted value (y-axis). Drag the sliders in the expression panel
+                to explore: {slider_names}.
         <br><br>
         A <em>straight line</em> = linear (proportional) relationship. &nbsp;
         A <em>curve</em> = diminishing or accelerating returns. &nbsp;
