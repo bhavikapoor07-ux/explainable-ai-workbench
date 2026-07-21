@@ -61,6 +61,7 @@ from src.feature_importance import (
     prepare_anchored_values,
     get_desmos_slider_config,
 )
+from src.gemini_explanation import generate_explanation
 
 # =============================================================================
 # PAGE CONFIGURATION
@@ -244,6 +245,10 @@ if "desmos_complete" not in st.session_state:
     st.session_state.desmos_complete = False
 if "show_gemini" not in st.session_state:
     st.session_state.show_gemini = False
+if "gemini_explanation" not in st.session_state:
+    st.session_state.gemini_explanation = None
+if "gemini_complete" not in st.session_state:
+    st.session_state.gemini_complete = False
 if "julia_warmed" not in st.session_state:
     st.session_state.julia_warmed = False
 # Thread management state
@@ -311,7 +316,7 @@ with st.sidebar:
         "Feature Importance": st.session_state.importance_complete,
         "Symbolic Regression": st.session_state.symbolic_complete,
         "Desmos Visualization": st.session_state.desmos_complete,
-        "AI Explanation": False,
+        "AI Explanation": st.session_state.gemini_complete,
     }
     icons = {
         True: "✅",
@@ -1877,6 +1882,127 @@ if (
         ):
             st.session_state.desmos_complete = True
             st.session_state.show_gemini    = True
+            st.rerun()
+
+# =============================================================================
+# PHASE 6 — GEMINI AI EXPLANATION
+# =============================================================================
+
+if (
+    st.session_state.desmos_complete
+    and st.session_state.best_equation is not None
+    and st.session_state.get("show_gemini", False)
+):
+    st.markdown("---")
+    st.markdown("""
+    <div class='section-header'>
+        <h2 style='margin:0; color:#e0e0e0;'>🤖 Phase 6 — AI Explanation</h2>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown(
+        "<p style='color:#8892b0;'>Generate a grounded AI explanation of what "
+        "the surrogate equation mathematically reveals about the model's behavior. "
+        "The explanation is strictly based on the equation and metrics — "
+        "no hallucination, no invented domain knowledge.</p>",
+        unsafe_allow_html=True
+    )
+
+    # ── API Key Input ─────────────────────────────────────────────────────────
+    st.markdown("### 🔑 Gemini API Key")
+    st.markdown(
+        "<p style='color:#8892b0; font-size:0.85rem;'>"
+        "Enter your Gemini API key. Get one free at "
+        "<a href='https://aistudio.google.com/app/apikey' target='_blank' "
+        "style='color:#4fc3f7;'>Google AI Studio</a>. "
+        "Your key is never stored.</p>",
+        unsafe_allow_html=True
+    )
+
+    api_key = st.text_input(
+        "Gemini API Key",
+        type="password",
+        placeholder="AIza...",
+        key="gemini_api_key_input"
+    )
+
+    # ── Generate Button ───────────────────────────────────────────────────────
+    col_g1, col_g2, col_g3 = st.columns([1, 2, 1])
+    with col_g2:
+        generate_btn = st.button(
+            "✨ Generate AI Explanation",
+            use_container_width=True,
+            type="primary",
+            key="generate_explanation_btn"
+        )
+
+    if generate_btn:
+        if not api_key or len(api_key.strip()) < 10:
+            st.error("❌ Please enter a valid Gemini API key.")
+        else:
+            with st.spinner("🤖 Gemini is analyzing the equation..."):
+                try:
+                    import re
+
+                    all_sliders = st.session_state.slider_features or []
+                    best_eq_str = str(st.session_state.best_equation)
+
+                    # Desmos assigns slider variables in alphabetical order: 'a', 'b', 'c', 'd', 'e'
+                    var_letters = ['a', 'b', 'c', 'd', 'e']
+
+                    # Dynamically map each slider feature to its Desmos variable alias
+                    feature_var_map = {
+                        feat: var_letters[i]
+                        for i, feat in enumerate(all_sliders)
+                        if i < len(var_letters)
+                    }
+
+                    # Check if the feature name OR its exact variable (as a standalone word) exists in the equation
+                    active_slider_features = []
+                    for feat in all_sliders:
+                        var_alias = feature_var_map.get(feat)
+                        # Check feature name directly OR check standalone variable token \b<var>\b (e.g. \ba\b)
+                        if feat in best_eq_str or (var_alias and re.search(rf"\b{var_alias}\b", best_eq_str)):
+                            active_slider_features.append(feat)
+
+                    explanation = generate_explanation(
+                        api_key=api_key.strip(),
+                        selected_model=st.session_state.selected_model_name,
+                        problem_type=st.session_state.problem_type,
+                        best_equation=st.session_state.best_equation,
+                        fidelity_score=st.session_state.fidelity_score,
+                        top_features=st.session_state.top_features or [],
+                        importance_df=st.session_state.importance_df,
+                        x_feature=st.session_state.x_feature,
+                        slider_features=all_sliders,
+                        active_slider_features=active_slider_features,
+                        anchored_values=st.session_state.anchored_values or {},
+                        encoding_maps=st.session_state.get("encoding_maps", {})
+                    )
+                    st.session_state.gemini_explanation = explanation
+                    st.session_state.gemini_complete = True
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Gemini error: {str(e)}")
+                    st.info("Check your API key and internet connection.")
+
+    # ── Display Explanation ───────────────────────────────────────────────────
+    if st.session_state.gemini_explanation:
+        st.markdown("### 📖 Explanation")
+        with st.container(border=True):
+            st.markdown(st.session_state.gemini_explanation)
+
+        st.markdown("""
+        <div class='custom-info'>
+            ⚠️ <strong>Grounded Explanation:</strong> This explanation is based
+            strictly on the mathematical structure of the surrogate equation and
+            the provided metrics. It does not use external domain knowledge.
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Regenerate option
+        if st.button("🔄 Regenerate Explanation", key="regen_btn"):
+            st.session_state.gemini_explanation = None
             st.rerun()
 
 # =============================================================================
